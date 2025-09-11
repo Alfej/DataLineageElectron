@@ -20,4 +20,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // Example: Notifications
   showNotification: (title, body) => ipcRenderer.send('show-notification', title, body),
+  
+  // LocalStorage backup functionality
+  backupLocalStorage: () => ipcRenderer.invoke('backup-localstorage')
 });

@@ -1,18 +1,16 @@
-import React, { useEffect, useState } from "react";
-import Graph from "./components/Graph";
-import { parseCsvFile } from "./utils/parseCSV";
+import { BrowserRouter, Routes, Route, Navigate, HashRouter } from "react-router-dom";
+import Landing from "./components/Landing";
+import GraphPage from "./pages/GraphPage";
 
 function App() {
-  const [data, setData] = useState([]);
-
-  useEffect(() => {
-    parseCsvFile("data/data.csv").then((rows) => setData(rows));
-  }, []);
-
   return (
-    <div style={{ width: "100vw", height: "100vh" }}>
-      <Graph data={data} />
-    </div>
+    <HashRouter>
+      <Routes>
+        <Route path="/" element={<Navigate to="/landingPage" replace />} />
+        <Route path="/landingPage" element={<Landing />} />
+        <Route path="/Graph/:fileKey" element={<GraphPage />} />
+      </Routes>
+    </HashRouter>
   );
 }
 
