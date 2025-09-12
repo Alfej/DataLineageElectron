@@ -13,9 +13,6 @@ import {
   Tooltip,
   Box,
   Typography,
-
-  FormControl,
-  InputLabel,
   Select,
   MenuItem,
   Button,
@@ -30,12 +27,18 @@ import FilterSelect from './FilterSelect';
 import GraphModel, { TableRelation } from './graph/graphModel';
 import { registerTypesFromData, getColorFor, getAllTypeMaps } from '../utils/typeColors';
 import getLayoutedElements from './graph/layout';
+import LayoutDirection from './LayoutDirection';
+import DownloadButton from './DownloadButton';
 import TooltipContent from './graph/TooltipContent';
+import FourHandleNode from './FourHandleNode';
+import { useNavigate } from 'react-router-dom';
 import logo from '../assets/PepsiCoLogo.png';
 import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
 import SettingsBackupRestoreOutlinedIcon from '@mui/icons-material/SettingsBackupRestoreOutlined';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
+import UploadFileOutlinedIcon from '@mui/icons-material/UploadFileOutlined';
+import { pushHistory, undo as undoHistory, redo as redoHistory, canUndo as canUndoHistory, canRedo as canRedoHistory, GraphHistoryEntry } from '../utils/history';
 
 // PepsiCo palette
 const PEPSI_BLUE = '#004B93';
@@ -48,6 +51,7 @@ const PEPSI_BG_LIGHT = '#EAF3FF';
 const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | null }) => {
   const getStorageKey = (base: string) => (fileKey ? `${base}::${fileKey}` : base);
   const nodeWidth = 180;
+  const navigate = useNavigate();
 
   // instantiate GraphModel to prepare traversal helpers (keeps lint happy)
   const graphModelRef = useRef<GraphModel | null>(null);
@@ -142,13 +146,38 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
   const [columns, setColumns] = useState<string[]>([]);
   const [hiddenNodes, setHiddenNodes] = useState<Set<string>>(new Set());
   const [selectedHidden, setSelectedHidden] = useState<string[]>([]);
+  // Persist layout direction per file (restore from localStorage if available)
+  const [layoutDirection, setLayoutDirection] = useState<string>(() => {
+    try {
+      const stored = localStorage.getItem(getStorageKey('graph_layout_direction'));
+      return stored || 'TB';
+    } catch {
+      return 'TB';
+    }
+  });
+
+  // Save layout direction whenever it changes so it persists across refreshes
+  useEffect(() => {
+    try {
+      localStorage.setItem(getStorageKey('graph_layout_direction'), layoutDirection);
+    } catch {}
+  }, [layoutDirection]);
 
   // Neighborhood filter (multi-select: choose nodes to focus on their immediate parents + children)
   const [neighborhoodNodes, setNeighborhoodNodes] = useState<string[]>([]);
+  const [canUndo, setCanUndo] = useState<boolean>(false);
+  const [canRedo, setCanRedo] = useState<boolean>(false);
 
   // Pagination for the table
   const [page, setPage] = useState<number>(1);
   const rowsPerPage = 10;
+
+  const refreshCanUndo = useCallback(async () => {
+  try { setCanUndo(await canUndoHistory(fileKey ?? null)); } catch { setCanUndo(false); }
+  try { setCanRedo(await canRedoHistory(fileKey ?? null)); } catch { setCanRedo(false); }
+  }, [fileKey]);
+
+  // refreshCanRedo logic merged into refreshCanUndo
 
   // 🔹 Reset hidden nodes with precise position preservation
   // Load positions from `graph_node_state` in localStorage (file-scoped)
@@ -170,6 +199,21 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       return {};
     }
   });
+
+  // helper to create a snapshot entry for history (merge stored and live positions)
+  const makeSnapshot = useCallback((): GraphHistoryEntry => {
+    const liveNodePositions = Object.fromEntries(
+      nodes.map((n) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }])
+    );
+    const mergedPositions = { ...positions, ...liveNodePositions } as Record<string, { x: number; y: number }>;
+    return {
+      positions: mergedPositions,
+      hidden: Array.from(hiddenNodes),
+      filters,
+      layoutDirection,
+      timestamp: Date.now(),
+    };
+  }, [nodes, positions, hiddenNodes, filters, layoutDirection]);
   const resetHiddenNodes = () => {
     try {
       const stored = localStorage.getItem(getStorageKey("graph_node_state"));
@@ -190,6 +234,8 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       }
     } catch { }
     setHiddenNodes(new Set());
+  // push history after reset
+  try { pushHistory(fileKey ?? null, makeSnapshot()); refreshCanUndo(); } catch {}
   };
   // 🔹 Right-click to hide node
   const onNodeContextMenu = useCallback((event: React.MouseEvent, node: any) => {
@@ -224,6 +270,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
         setFilters(defaultFilters);
         localStorage.setItem(getStorageKey("current_Filters_state"), JSON.stringify(defaultFilters));
       }
+  // ensure initial history snapshot once positions are available later
     }
   }, [data]);
 
@@ -290,37 +337,24 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
         });
       });
 
-      const layouted = getLayoutedElements(createdNodes, createdEdges);
-      setPositions(
-        layouted.nodes.reduce((acc: any, node: any) => {
-          acc[node.id] = node.position;
-          return acc;
-        }, {})
-      );
+      (async () => {
+        try {
+          const layouted = await getLayoutedElements(createdNodes, createdEdges, layoutDirection);
+          setPositions(
+            layouted.nodes.reduce((acc: any, node: any) => {
+              acc[node.id] = node.position;
+              return acc;
+            }, {})
+          );
+          try {
+            const positionsSnapshot = Object.fromEntries(layouted.nodes.map((n: any) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }]));
+            saveGraphStateImmediate(positionsSnapshot, new Set(), data, filteredData);
+          } catch {}
+        } catch {}
+      })();
 
       // Save to localStorage for future loads (file-scoped)
-      const state: Record<string, any> = {};
-      layouted.nodes.forEach((n: any) => {
-        const px = n.position && typeof n.position.x === 'number' ? Number(n.position.x) : 0;
-        const py = n.position && typeof n.position.y === 'number' ? Number(n.position.y) : 0;
-        // parents: rows where childTableName === node.id
-        const parents = data.filter((d) => d.childTableName === n.id).map((d) => d.parentTableName);
-        const children = data.filter((d) => d.parentTableName === n.id).map((d) => d.childTableName);
-        state[n.id] = {
-          id: n.id,
-          x: px,
-          y: py,
-          parents,
-          children,
-          hidden: false,
-          filteredOut: false,
-        };
-      });
-      try {
-        // persist using the unified save helper so shape is consistent
-        const positionsSnapshot = Object.fromEntries(layouted.nodes.map((n: any) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }]));
-        saveGraphStateImmediate(positionsSnapshot, new Set(), data, filteredData);
-      } catch { }
+  // state population & persistence handled in async layout block above
     }
   }, [data]);
 
@@ -381,6 +415,8 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
     const liveNodePositions = Object.fromEntries(nodes.map((n) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }]));
     const fullSnapshot = { ...positions, ...liveNodePositions } as Record<string, { x: number; y: number }>;
     try { saveGraphStateImmediate(fullSnapshot, hiddenNodes, data, filteredData); } catch {}
+  // Also store a version snapshot for undo (debounced via effect cadence)
+  try { pushHistory(fileKey ?? null, makeSnapshot()); refreshCanUndo(); } catch {}
   }, [filters, hiddenNodes, positions, filteredData]);
 
   // 🔹 Filter options (dependent on other selections and neighborhood)
@@ -472,6 +508,15 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       return prev;
     });
     setHiddenNodes(newHidden);
+    // push to history
+    try {
+      const snap: GraphHistoryEntry = {
+        ...makeSnapshot(),
+        hidden: Array.from(newHidden)
+      };
+      pushHistory(fileKey ?? null, snap);
+      refreshCanUndo();
+    } catch {}
   };
 
   // 🔹 Unhide node function
@@ -495,6 +540,14 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
     } as Record<string, { x: number; y: number }>;
     saveGraphStateImmediate(positionsSnapshotAfterUnhide, newHidden, data, filteredData);
     setHiddenNodes(newHidden);
+    try {
+      const snap: GraphHistoryEntry = {
+        ...makeSnapshot(),
+        hidden: Array.from(newHidden)
+      };
+      pushHistory(fileKey ?? null, snap);
+      refreshCanUndo();
+    } catch {}
   };
 
   // 🔹 Build nodes & edges
@@ -509,15 +562,28 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
     const createdNodes: any[] = [];
     const createdEdges: any[] = [];
 
+    // helper to pick handle based on layout axis for straighter orthogonal edges
+    const getClosestHandle = (nodePos: { x: number; y: number } | undefined, otherCenter: { x: number; y: number }) => {
+      const vertical = layoutDirection === 'TB' || layoutDirection === 'BT';
+      if (!nodePos) return vertical ? 'top' : 'left';
+      const nodeHeight = 50;
+      const center = { x: nodePos.x + nodeWidth / 2, y: nodePos.y + nodeHeight / 2 };
+      if (vertical) {
+        return otherCenter.y < center.y ? 'top' : 'bottom';
+      }
+      return otherCenter.x < center.x ? 'left' : 'right';
+    };
+
     filteredData.forEach((row, index) => {
       const { childTableName: child, parentTableName: parent, relationship } = row;
       if (!child || !parent) return;
 
       // Reverse: treat parent as child, child as parent
-      if (!hiddenNodes.has(parent) && !nodeMap[parent]) {
+    if (!hiddenNodes.has(parent) && !nodeMap[parent]) {
         nodeMap[parent] = true;
         createdNodes.push({
           id: parent,
+      type: 'fourHandle',
           data: {
             label: `${parent} (${row.parentTableType})`,
             details: filteredData.filter(
@@ -534,9 +600,10 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
         });
       }
 
-      if (!hiddenNodes.has(child) && !nodeMap[child]) {
+    if (!hiddenNodes.has(child) && !nodeMap[child]) {
         nodeMap[child] = true;
         createdNodes.push({
+      type: 'fourHandle',
           id: child,
           data: {
             label: `${child} (${row.childTableType})`,
@@ -555,10 +622,19 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       }
 
       if (!hiddenNodes.has(parent) && !hiddenNodes.has(child)) {
+        // determine centers
+        const parentPos = createdNodes.find(n => n.id === parent)?.position || positions[parent];
+        const childPos = createdNodes.find(n => n.id === child)?.position || positions[child];
+        const parentCenter = parentPos ? { x: parentPos.x + nodeWidth / 2, y: parentPos.y + 25 } : { x: 0, y: 0 };
+        const childCenter = childPos ? { x: childPos.x + nodeWidth / 2, y: childPos.y + 25 } : { x: 0, y: 0 };
+        const sourceHandle = getClosestHandle(parentPos, childCenter);
+        const targetHandle = getClosestHandle(childPos, parentCenter);
         createdEdges.push({
           id: `e-${parent}-${child}-${index}`,
           source: parent,
           target: child,
+          sourceHandle,
+          targetHandle,
           label: relationship,
           style: { strokeWidth: 2, stroke: getColorFor('relationship', relationship) || "#444" },
           labelStyle: { fill: "#333", fontWeight: 600, fontSize: 12 },
@@ -594,10 +670,19 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
                 // find a representative relationship type between p and hidden or hidden and c
                 const relRow = data.find((d) => d.parentTableName === p && d.childTableName === hidden) || data.find((d) => d.parentTableName === hidden && d.childTableName === c);
                 const rel = relRow ? relRow.relationship : '';
+                // compute handle selection for bridging edges
+                const pPos = createdNodes.find(n => n.id === p)?.position || positions[p];
+                const cPos = createdNodes.find(n => n.id === c)?.position || positions[c];
+                const pCenter = pPos ? { x: pPos.x + nodeWidth / 2, y: pPos.y + 25 } : { x: 0, y: 0 };
+                const cCenter = cPos ? { x: cPos.x + nodeWidth / 2, y: cPos.y + 25 } : { x: 0, y: 0 };
+                const sHandle = getClosestHandle(pPos, cCenter);
+                const tHandle = getClosestHandle(cPos, pCenter);
                 createdEdges.push({
                   id,
                   source: p,
                   target: c,
+                  sourceHandle: sHandle,
+                  targetHandle: tHandle,
                   label: rel,
                   style: { strokeWidth: 2, stroke: getColorFor('relationship', rel) || '#444', strokeDasharray: '4 4', strokeLinecap: 'round' },
                   labelStyle: { fill: '#333', fontWeight: 600, fontSize: 12 },
@@ -610,23 +695,21 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       }
     }
 
-    // Only apply layout if positions are empty AND no hidden nodes (first load or filter change)
-    if (Object.keys(positions).length === 0 && hiddenNodes.size === 0) {
-      const layouted = getLayoutedElements(createdNodes, createdEdges);
-      setNodes(layouted.nodes);
-      setEdges(layouted.edges);
-      // Save initial positions
-      setPositions(
-        layouted.nodes.reduce((acc: any, node: any) => {
-          acc[node.id] = node.position;
-          return acc;
-        }, {})
-      );
-    } else {
+    const runInitialLayout = async () => {
+      if (Object.keys(positions).length === 0 && hiddenNodes.size === 0) {
+        try {
+          const layouted = await getLayoutedElements(createdNodes, createdEdges, layoutDirection);
+          setNodes(layouted.nodes as any);
+          setEdges(layouted.edges as any);
+          setPositions(layouted.nodes.reduce((acc: any, node: any) => { acc[node.id] = node.position; return acc; }, {}));
+          return;
+        } catch {}
+      }
       setNodes(createdNodes);
       setEdges(createdEdges);
-    }
-  }, [filteredData, hiddenNodes, positions]);
+    };
+    runInitialLayout();
+  }, [filteredData, hiddenNodes, positions, layoutDirection]);
 
   // 🔹 Track node drag and update positions with precise coordinates
   const handleNodesChange = useCallback((changes: any) => {
@@ -654,6 +737,18 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       // Save snapshot (debounced) and then update state
       debouncedSaveGraphState(snapshot, hiddenNodes, data, filteredData);
       setPositions((prev) => ({ ...prev, ...positionUpdates }));
+      // if drag ended, push to history
+      const dragEnded = changes.some((c: any) => c.type === 'position' && (c.dragging === false || typeof c.dragging === 'undefined'));
+      if (dragEnded) {
+        try {
+          const snap: GraphHistoryEntry = {
+            ...makeSnapshot(),
+            positions: { ...snapshot }
+          };
+          pushHistory(fileKey ?? null, snap);
+          refreshCanUndo();
+        } catch {}
+      }
     }
   }, [onNodesChange, debouncedSaveGraphState, nodes, hiddenNodes, data, filteredData]);
 
@@ -744,8 +839,12 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
     }))
   ), [edges, hoveredNode, hoveredEdge]);
 
+  // Memoize nodeTypes to avoid recreating the object on every render (prevents React Flow warnings)
+  const nodeTypesMemo = useMemo(() => ({ fourHandle: FourHandleNode }), []);
+
   return (
     <div style={{ width: '100vw', background: PEPSI_LIGHT }}>
+
       {/* Header ribbon (larger) */}
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 3, py: 2, background: '#fff', boxShadow: 2 }}>
         <Typography variant="h4" sx={{ fontWeight: 800, color: PEPSI_BLUE }}>Data Lineage Visualization</Typography>
@@ -781,36 +880,47 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       </Box>
 
       {/* Neighborhood ribbon (below filters) */}
-  <Box sx={{ px: 3, py: 2, background: '#fff' }}>
-        <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-          <Box sx={{ minWidth: 300 }}>
-            <FilterSelect
-              title="Neighborhood"
-              options={neighborhoodOptions}
-              value={neighborhoodNodes}
-              onChange={(vals) => setNeighborhoodNodes(vals)}
-            />
+      <Box sx={{ px: 3, py: 2, background: '#fff' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2 }}>
+          <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+            <Box sx={{ minWidth: 300 }}>
+              <FilterSelect
+                title="Neighborhood"
+                options={neighborhoodOptions}
+                value={neighborhoodNodes}
+                onChange={(vals) => setNeighborhoodNodes(vals)}
+              />
+            </Box>
+            <Typography variant="body2" sx={{ color: '#666' }}>{neighborhoodNodes && neighborhoodNodes.length > 0 ? `Neighborhood: ${neighborhoodNodes.join(', ')}` : 'Showing all nodes'}</Typography>
           </Box>
-          <Typography variant="body2" sx={{ color: '#666' }}>{neighborhoodNodes && neighborhoodNodes.length > 0 ? `Neighborhood: ${neighborhoodNodes.join(', ')}` : 'Showing all nodes'}</Typography>
+          <Button variant="contained" onClick={() => { const resetFilters = Object.fromEntries(Object.keys(filters).map(key => [key, []])); setFilters(resetFilters); setNeighborhoodNodes([]); try { localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(resetFilters)); } catch { } }} sx={{ fontWeight: 'bold', backgroundColor: PEPSI_BLUE, '&:hover': { backgroundColor: '#00356a' } }}>
+            <SettingsBackupRestoreOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Reset All Filters
+          </Button>
         </Box>
       </Box>
 
       {/* Hidden nodes + Unhide Selected ribbon */}
-  <Box sx={{ px: 3, py: 2, background: PEPSI_BG_LIGHT, borderBottom: '1px solid rgba(0,0,0,0.06)', display: 'flex', gap: 2, alignItems: 'flex-end' }}>
-        <Box sx={{ minWidth: 320 }}>
-          <FilterSelect
-            title="Hidden Nodes"
-            options={Array.from(hiddenNodes)}
-            value={selectedHidden}
-            onChange={(vals) => setSelectedHidden(vals)}
-            placeholderAllText="All"
-          />
+      <Box sx={{ px: 3, py: 2, background: PEPSI_BG_LIGHT, borderBottom: '1px solid rgba(0,0,0,0.06)' }}>
+        <Box sx={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 2 }}>
+          <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-end' }}>
+            <Box sx={{ minWidth: 320 }}>
+              <FilterSelect
+                title="Hidden Nodes"
+                options={Array.from(hiddenNodes)}
+                value={selectedHidden}
+                onChange={(vals) => setSelectedHidden(vals)}
+                placeholderAllText="All"
+              />
+            </Box>
+            <Button variant="contained" color="success" disabled={selectedHidden.length === 0} onClick={() => { selectedHidden.forEach((id) => unhideNode(id)); setSelectedHidden([]); }} sx={{ fontWeight: 'bold' }}>Unhide Selected</Button>
+          </Box>
+          <Button variant="contained" onClick={resetHiddenNodes} sx={{ fontWeight: 'bold', backgroundColor: '#4CAF50', '&:hover': { backgroundColor: '#388e3c' } }}>
+            <VisibilityOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Reset Hidden Nodes
+          </Button>
         </Box>
-
-        <Button variant="contained" color="success" disabled={selectedHidden.length === 0} onClick={() => { selectedHidden.forEach((id) => unhideNode(id)); setSelectedHidden([]); }} sx={{ fontWeight: 'bold' }}>Unhide Selected</Button>
       </Box>
 
-      {/* Buttons ribbon */}
+      {/* Buttons ribbon (core actions) */}
       <Box sx={{ px: 3, py: 2, background: '#fff', display: 'flex', gap: 2, alignItems: 'center', justifyContent: 'space-between' }}>
         <Box sx={{ display: 'flex', alignItems: 'center' }}>
           <Typography
@@ -826,12 +936,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
             💡 Tip: Right-click on any node to hide it from the graph
           </Typography>
         </Box>
-
         <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-          <Button variant="contained" onClick={() => { const resetFilters = Object.fromEntries(Object.keys(filters).map(key => [key, []])); setFilters(resetFilters); setNeighborhoodNodes([]); try { localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(resetFilters)); } catch { } }} sx={{ fontWeight: 'bold', backgroundColor: PEPSI_BLUE, '&:hover': { backgroundColor: '#00356a' } }}>
-            <SettingsBackupRestoreOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Reset All Filters
-          </Button>
-
           <Button variant="contained" onClick={() => {
             const liveNodePositions = Object.fromEntries(nodes.map((n) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }]));
             const fullSnapshot = { ...positions, ...liveNodePositions } as Record<string, { x: number; y: number }>;
@@ -840,63 +945,125 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
           }} sx={{ fontWeight: 'bold', backgroundColor: '#FFC107', color: '#000', '&:hover': { backgroundColor: '#e0a800' } }}>
             <SaveOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Save Node Positions
           </Button>
-
-          <Button variant="contained" onClick={resetHiddenNodes} sx={{ fontWeight: 'bold', backgroundColor: '#4CAF50', '&:hover': { backgroundColor: '#388e3c' } }}>
-            <VisibilityOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Reset Hidden Nodes
+          <Button variant="contained" onClick={() => navigate('/')} sx={{ fontWeight: 'bold', backgroundColor: '#0055A4', color: '#fff', '&:hover': { backgroundColor: '#004080' } }}>
+            <UploadFileOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Upload CSV
           </Button>
-
-          <Button variant="contained" onClick={() => { const visibleNodes = nodes.filter(n => !hiddenNodes.has(n.id)); const visibleEdges = edges.filter(e => !hiddenNodes.has(e.source) && !hiddenNodes.has(e.target)); const layouted = getLayoutedElements(visibleNodes, visibleEdges); const newPositions = { ...positions }; layouted.nodes.forEach(n => { if (n.position && typeof n.position.x === 'number' && typeof n.position.y === 'number') { newPositions[n.id] = { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }; } }); setPositions(newPositions); const layoutPos = Object.fromEntries(layouted.nodes.map((n: any) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }])); const fullSnapshot = { ...positions, ...layoutPos } as Record<string, { x: number; y: number }>; debouncedSaveGraphState(fullSnapshot, hiddenNodes, data, filteredData); }} sx={{ fontWeight: 'bold', backgroundColor: PEPSI_BLUE, '&:hover': { backgroundColor: '#00356a' } }}>
-            <AutoAwesomeOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Beautify Graph
+          <Button variant="contained" onClick={async () => { const visibleNodes = nodes.filter(n => !hiddenNodes.has(n.id)); const visibleEdges = edges.filter(e => !hiddenNodes.has(e.source) && !hiddenNodes.has(e.target)); try { const layouted = await getLayoutedElements(visibleNodes, visibleEdges, layoutDirection); const newPositions = { ...positions }; layouted.nodes.forEach((n: any) => { if (n.position && typeof n.position.x === 'number' && typeof n.position.y === 'number') { newPositions[n.id] = { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }; } }); setPositions(newPositions); const layoutPos = Object.fromEntries(layouted.nodes.map((n: any) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }])); const fullSnapshot = { ...positions, ...layoutPos } as Record<string, { x: number; y: number }>; debouncedSaveGraphState(fullSnapshot, hiddenNodes, data, filteredData); try { pushHistory(fileKey ?? null, { positions: newPositions, hidden: Array.from(hiddenNodes), filters, layoutDirection, timestamp: Date.now() }); refreshCanUndo(); } catch {} } catch {} }} sx={{ fontWeight: 'bold', backgroundColor: PEPSI_BLUE, '&:hover': { backgroundColor: '#00356a' } }}>
+            <AutoAwesomeOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Simplify Graph
           </Button>
         </Box>
       </Box>
 
-      {/* Type color editors */}
-      <Box sx={{ px: 3, py: 2, background: '#f9fbff', borderTop: '1px solid #e0e0e0', display: 'flex', gap: 6, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        <Box>
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>Table Types</Typography>
-          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-            {Object.keys(tableTypeMap).length === 0 && <Typography variant="body2">No table types</Typography>}
-            {Object.entries(tableTypeMap).map(([t, c]) => (
-                <label key={t} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', borderRadius: 16, background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
-                <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 6, background: c }} />
-                <span style={{ fontSize: 13, color: '#222' }}>{t}</span>
-                {/* <input title="Pick color" type="color" value={c} disabled style={{ border: 0, background: 'transparent', padding: 0, cursor: 'default' }} /> */}
-              </label>
-            ))}
-          </Box>
-        </Box>
+      
 
-        <Box>
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>Relationship Types</Typography>
-          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-            {Object.keys(relTypeMap).length === 0 && <Typography variant="body2">No relationship types</Typography>}
-            {Object.entries(relTypeMap).map(([t, c]) => (
-                <label key={t} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', borderRadius: 16, background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
-                <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 6, background: c }} />
-                <span style={{ fontSize: 13, color: '#222' }}>{t}</span>
-                {/* <input title="Pick color" type="color" value={c} disabled style={{ border: 0, background: 'transparent', padding: 0, cursor: 'default' }} /> */}
-              </label>
-            ))}
+      {/* Legend + layout / history controls */}
+      <Box sx={{ px: 3, py: 2, background: '#f9fbff', borderTop: '1px solid #e0e0e0' }}>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 4, flexWrap: 'wrap' }}>
+          <Box sx={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <Box>
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>Table Types</Typography>
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                {Object.keys(tableTypeMap).length === 0 && <Typography variant="body2">No table types</Typography>}
+                {Object.entries(tableTypeMap).map(([t, c]) => (
+                    <label key={t} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', borderRadius: 16, background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
+                    <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 6, background: c }} />
+                    <span style={{ fontSize: 13, color: '#222' }}>{t}</span>
+                  </label>
+                ))}
+              </Box>
+            </Box>
+            <Box>
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>Relationship Types</Typography>
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                {Object.keys(relTypeMap).length === 0 && <Typography variant="body2">No relationship types</Typography>}
+                {Object.entries(relTypeMap).map(([t, c]) => (
+                    <label key={t} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', borderRadius: 16, background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
+                    <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 6, background: c }} />
+                    <span style={{ fontSize: 13, color: '#222' }}>{t}</span>
+                  </label>
+                ))}
+              </Box>
+            </Box>
+            <Box>
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>Line Types</Typography>
+              <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, background: '#fff', padding: '6px 10px', borderRadius: 16, boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
+                  <svg width="36" height="12" viewBox="0 0 36 12" xmlns="http://www.w3.org/2000/svg">
+                    <line x1="2" y1="6" x2="34" y2="6" stroke="#444" strokeWidth="2" strokeLinecap="round" />
+                  </svg>
+                  <Typography variant="body2">Direct relationship</Typography>
+                </Box>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, background: '#fff', padding: '6px 10px', borderRadius: 16, boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
+                  <svg width="36" height="12" viewBox="0 0 36 12" xmlns="http://www.w3.org/2000/svg">
+                    <line x1="2" y1="6" x2="34" y2="6" stroke="#444" strokeWidth="2" strokeLinecap="round" strokeDasharray="4 4" />
+                  </svg>
+                  <Typography variant="body2">Indirect relationship</Typography>
+                </Box>
+              </Box>
+            </Box>
           </Box>
-        </Box>
-        
-        <Box>
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>Line Types</Typography>
-          <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, background: '#fff', padding: '6px 10px', borderRadius: 16, boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
-              <svg width="36" height="12" viewBox="0 0 36 12" xmlns="http://www.w3.org/2000/svg">
-                <line x1="2" y1="6" x2="34" y2="6" stroke="#444" strokeWidth="2" strokeLinecap="round" />
-              </svg>
-              <Typography variant="body2">Direct relationship</Typography>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, alignItems: 'flex-end' }}>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <Button variant="outlined" disabled={!canUndo} onClick={async () => {
+                try {
+                  const entry = await undoHistory(fileKey ?? null);
+                  if (!entry) return;
+                  setFilters(entry.filters || {});
+                  setLayoutDirection(entry.layoutDirection || 'TB');
+                  setHiddenNodes(new Set(entry.hidden || []));
+                  setPositions(entry.positions || {});
+                  setNodes((prev) => prev.map((pn) => (
+                    entry.positions && entry.positions[pn.id]
+                      ? { ...pn, position: entry.positions[pn.id] }
+                      : pn
+                  )));
+                } finally {
+                  refreshCanUndo();
+                }
+              }} sx={{ fontWeight: 'bold' }}>Undo</Button>
+              <Button variant="outlined" disabled={!canRedo} onClick={async () => {
+                try {
+                  const entry = await redoHistory(fileKey ?? null);
+                  if (!entry) return;
+                  setFilters(entry.filters || {});
+                  setLayoutDirection(entry.layoutDirection || 'TB');
+                  setHiddenNodes(new Set(entry.hidden || []));
+                  setPositions(entry.positions || {});
+                  setNodes((prev) => prev.map((pn) => (
+                    entry.positions && entry.positions[pn.id]
+                      ? { ...pn, position: entry.positions[pn.id] }
+                      : pn
+                  )));
+                } finally {
+                  refreshCanUndo();
+                }
+              }} sx={{ fontWeight: 'bold' }}>Redo</Button>
             </Box>
-
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, background: '#fff', padding: '6px 10px', borderRadius: 16, boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
-              <svg width="36" height="12" viewBox="0 0 36 12" xmlns="http://www.w3.org/2000/svg">
-                <line x1="2" y1="6" x2="34" y2="6" stroke="#444" strokeWidth="2" strokeLinecap="round" strokeDasharray="4 4" />
-              </svg>
-              <Typography variant="body2">Indirect relationship</Typography>
-            </Box>
+            <LayoutDirection
+              value={layoutDirection}
+              onChange={(d) => setLayoutDirection(d)}
+              onApply={async () => {
+                const visibleNodes = nodes.filter(n => !hiddenNodes.has(n.id));
+                const visibleEdges = edges.filter(e => !hiddenNodes.has(e.source) && !hiddenNodes.has(e.target));
+                try {
+                  const layouted = await getLayoutedElements(visibleNodes, visibleEdges, layoutDirection);
+                  const newPositions = { ...positions };
+                  layouted.nodes.forEach((n: any) => {
+                    if (n.position && typeof n.position.x === 'number' && typeof n.position.y === 'number') {
+                      newPositions[n.id] = { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) };
+                    }
+                  });
+                  setPositions(newPositions);
+                  setNodes((prevNodes) => prevNodes.map((pn) => {
+                    const updated = layouted.nodes.find((ln: any) => ln.id === pn.id);
+                    return updated ? ({ ...pn, position: updated.position } as any) : pn;
+                  }));
+                  const fullSnapshot = Object.fromEntries(layouted.nodes.map((n: any) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }]));
+                  try { saveGraphStateImmediate({ ...positions, ...fullSnapshot }, hiddenNodes, data, filteredData); } catch {}
+                  try { pushHistory(fileKey ?? null, { positions: newPositions, hidden: Array.from(hiddenNodes), filters, layoutDirection, timestamp: Date.now() }); refreshCanUndo(); } catch {}
+                } catch {}
+              }}
+            />
           </Box>
         </Box>
       </Box>
@@ -914,8 +1081,8 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
         mx: 2,
         mb: 2,
         background: "#fff",
-        width: '100%',
-        height: '100vh',
+        width: 'calc(100% - 32px)',
+        height: '80vh',
         position: 'relative'
       }}>
         <ReactFlow
@@ -928,6 +1095,9 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
           onNodeContextMenu={onNodeContextMenu}
           onEdgeMouseEnter={onEdgeMouseEnter}
           onEdgeMouseLeave={onEdgeMouseLeave}
+          nodeTypes={nodeTypesMemo}
+          minZoom={0.001}
+          maxZoom={5}
           fitView
         >
           <Background color="#e3f2fd" />
@@ -937,10 +1107,11 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
             nodeStrokeColor={(n) => (hoveredNode === n.id ? "#ff9800" : "#1976d2")}
             maskColor="rgba(33,150,243,0.1)"
           />
+          <DownloadButton fileName={(fileKey ? `graph-${fileKey}` : 'graph') + '.png'} />
         </ReactFlow>
       </Box>
 
-      {/* 🔹 Visible Nodes Table */}
+  {/* 🔹 Visible Nodes Table */}
       <Box sx={{
         mx: 2,
         my: 4,
@@ -1014,6 +1185,6 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       </Box>
     </div>
   );
-};
+}; 
 
 export default Graph;
