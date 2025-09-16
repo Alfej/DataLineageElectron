@@ -8,7 +8,7 @@ import ReactFlow, {
   MarkerType,
 } from "reactflow";
 import "reactflow/dist/style.css";
-import {  } from "@mui/material";
+import { } from "@mui/material";
 import {
   Tooltip,
   Box,
@@ -39,6 +39,7 @@ import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import UploadFileOutlinedIcon from '@mui/icons-material/UploadFileOutlined';
 import { pushHistory, undo as undoHistory, redo as redoHistory, canUndo as canUndoHistory, canRedo as canRedoHistory, GraphHistoryEntry } from '../utils/history';
+import { Height } from "@mui/icons-material";
 
 // PepsiCo palette
 const PEPSI_BLUE = '#004B93';
@@ -94,7 +95,40 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       } catch { }
     }, 300)
   ).current;
+  const getAllAncestors = (nodeId: string, visited = new Set<string>()): string[] => {
+    if (visited.has(nodeId)) return []; // Prevent infinite loops
+    visited.add(nodeId);
 
+    const immediateParents = data
+      .filter(d => d.childTableName === nodeId)
+      .map(d => d.parentTableName)
+      .filter(Boolean);
+
+    const ancestors = [...immediateParents];
+    immediateParents.forEach(parent => {
+      ancestors.push(...getAllAncestors(parent, new Set(visited)));
+    });
+
+    return [...new Set(ancestors)]; // Remove duplicates
+  };
+
+  // Helper function to recursively get all descendants
+  const getAllDescendants = (nodeId: string, visited = new Set<string>()): string[] => {
+    if (visited.has(nodeId)) return []; // Prevent infinite loops
+    visited.add(nodeId);
+
+    const immediateChildren = data
+      .filter(d => d.parentTableName === nodeId)
+      .map(d => d.childTableName)
+      .filter(Boolean);
+
+    const descendants = [...immediateChildren];
+    immediateChildren.forEach(child => {
+      descendants.push(...getAllDescendants(child, new Set(visited)));
+    });
+
+    return [...new Set(descendants)]; // Remove duplicates
+  };
   // Immediate save helper used for actions that must persist instantly (save button, filter changes)
   const saveGraphStateImmediate = (positionsSnapshot: Record<string, { x: number; y: number }>, hidden: Set<string>, dataRows: TableRelation[], filteredRows: TableRelation[]) => {
     const state: Record<string, any> = {};
@@ -132,7 +166,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       const maps = getAllTypeMaps();
       setTableTypeMap(maps.table);
       setRelTypeMap(maps.relationship);
-    } catch {}
+    } catch { }
   }, [data]);
   // Initialize filters from localStorage or default to empty
   const [filters, setFilters] = useState<{ [key: string]: string[] }>(() => {
@@ -160,7 +194,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
   useEffect(() => {
     try {
       localStorage.setItem(getStorageKey('graph_layout_direction'), layoutDirection);
-    } catch {}
+    } catch { }
   }, [layoutDirection]);
 
   // Neighborhood filter (multi-select: choose nodes to focus on their immediate parents + children)
@@ -173,8 +207,8 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
   const rowsPerPage = 10;
 
   const refreshCanUndo = useCallback(async () => {
-  try { setCanUndo(await canUndoHistory(fileKey ?? null)); } catch { setCanUndo(false); }
-  try { setCanRedo(await canRedoHistory(fileKey ?? null)); } catch { setCanRedo(false); }
+    try { setCanUndo(await canUndoHistory(fileKey ?? null)); } catch { setCanUndo(false); }
+    try { setCanRedo(await canRedoHistory(fileKey ?? null)); } catch { setCanRedo(false); }
   }, [fileKey]);
 
   // refreshCanRedo logic merged into refreshCanUndo
@@ -234,8 +268,8 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       }
     } catch { }
     setHiddenNodes(new Set());
-  // push history after reset
-  try { pushHistory(fileKey ?? null, makeSnapshot()); refreshCanUndo(); } catch {}
+    // push history after reset
+    try { pushHistory(fileKey ?? null, makeSnapshot()); refreshCanUndo(); } catch { }
   };
   // 🔹 Right-click to hide node
   const onNodeContextMenu = useCallback((event: React.MouseEvent, node: any) => {
@@ -246,8 +280,8 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
   // 🔹 Extract dynamic columns and initialize/restore filters
   useEffect(() => {
     if (data.length > 0) {
-  // register any new table/relationship types and assign colors
-  try { registerTypesFromData(data as any[]); } catch {}
+      // register any new table/relationship types and assign colors
+      try { registerTypesFromData(data as any[]); } catch { }
       const cols = Object.keys(data[0]);
       setColumns(cols);
 
@@ -270,7 +304,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
         setFilters(defaultFilters);
         localStorage.setItem(getStorageKey("current_Filters_state"), JSON.stringify(defaultFilters));
       }
-  // ensure initial history snapshot once positions are available later
+      // ensure initial history snapshot once positions are available later
     }
   }, [data]);
 
@@ -302,7 +336,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       data.forEach((row, index) => {
         const { childTableName: child, parentTableName: parent, relationship } = row;
         if (!child || !parent) return;
-    if (!nodeMap[parent]) {
+        if (!nodeMap[parent]) {
           nodeMap[parent] = true;
           createdNodes.push({
             id: parent,
@@ -311,10 +345,10 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
               details: data.filter((rel) => rel.parentTableName === parent || rel.childTableName === parent),
             },
             position: { x: 0, y: 0 },
-      style: { padding: 10, borderRadius: '8px', border: '1px solid #999', background: getColorFor('table', row.parentTableType) || '#fff' },
+            style: { padding: 10, borderRadius: '8px', border: '1px solid #999', background: getColorFor('table', row.parentTableType) || '#fff' },
           });
         }
-    if (!nodeMap[child]) {
+        if (!nodeMap[child]) {
           nodeMap[child] = true;
           createdNodes.push({
             id: child,
@@ -323,7 +357,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
               details: data.filter((rel) => rel.parentTableName === child || rel.childTableName === child),
             },
             position: { x: 0, y: 0 },
-      style: { padding: 10, borderRadius: '8px', border: '1px solid #999', background: getColorFor('table', row.childTableType) || '#fff' },
+            style: { padding: 10, borderRadius: '8px', border: '1px solid #999', background: getColorFor('table', row.childTableType) || '#fff' },
           });
         }
         createdEdges.push({
@@ -349,12 +383,12 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
           try {
             const positionsSnapshot = Object.fromEntries(layouted.nodes.map((n: any) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }]));
             saveGraphStateImmediate(positionsSnapshot, new Set(), data, filteredData);
-          } catch {}
-        } catch {}
+          } catch { }
+        } catch { }
       })();
 
       // Save to localStorage for future loads (file-scoped)
-  // state population & persistence handled in async layout block above
+      // state population & persistence handled in async layout block above
     }
   }, [data]);
 
@@ -374,49 +408,47 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
     // Build rows that directly connect any selected node to its immediate parents or immediate children.
     const gm = graphModelRef.current;
     // For each selected node, collect its immediate parents and children
+    // For each selected node, collect ALL ancestors and descendants
     const sel = neighborhoodNodes;
-    const parentMap: Record<string, string[]> = {};
-    const childMap: Record<string, string[]> = {};
-    if (gm) {
-      sel.forEach((s) => {
-        parentMap[s] = gm.getParents(s);
-        childMap[s] = gm.getChildren(s);
-      });
-    } else {
-      sel.forEach((s) => {
-        parentMap[s] = [];
-        childMap[s] = [];
-        data.forEach((d) => {
-          if (d.childTableName === s && d.parentTableName) parentMap[s].push(d.parentTableName);
-          if (d.parentTableName === s && d.childTableName) childMap[s].push(d.childTableName);
-        });
-      });
-    }
+    const allAncestors = new Set<string>();
+    const allDescendants = new Set<string>();
+
+    // Helper function to recursively get all ancestors
+
+    // Collect all ancestors and descendants for selected nodes
+    sel.forEach(nodeId => {
+      getAllAncestors(nodeId).forEach(ancestor => allAncestors.add(ancestor));
+      getAllDescendants(nodeId).forEach(descendant => allDescendants.add(descendant));
+      // Also include the selected node itself
+      allAncestors.add(nodeId);
+      allDescendants.add(nodeId);
+    });
 
     return base.filter((row) => {
-      // include row if it directly connects any selected node to one of its immediate neighbors
-      return sel.some((s) => (
-        (row.parentTableName === s && childMap[s]?.includes(row.childTableName)) ||
-        (row.childTableName === s && parentMap[s]?.includes(row.parentTableName))
-      ));
+      // Include row if it connects any node in the complete ancestry/descendancy chain
+      const parentInChain = allAncestors.has(row.parentTableName) || allDescendants.has(row.parentTableName);
+      const childInChain = allAncestors.has(row.childTableName) || allDescendants.has(row.childTableName);
+
+      // Include the row if both parent and child are part of the selected nodes' complete family tree
+      return parentInChain && childInChain;
     });
   }, [data, filters, neighborhoodNodes]);
 
   // Reset page when filters/neighborhood change
-  useEffect(() => setPage(1), [filters, neighborhoodNodes, data]);
+  useEffect(() => { setPage(1); }, [filters, neighborhoodNodes, data]);
 
   // Persist filters and latest node state whenever filters/hidden/positions/filteredData change
   useEffect(() => {
     try {
       localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(filters));
-    } catch {}
+    } catch { }
 
     // Save graph state immediately so reopen restores exact positions & filteredOut
     const liveNodePositions = Object.fromEntries(nodes.map((n) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }]));
     const fullSnapshot = { ...positions, ...liveNodePositions } as Record<string, { x: number; y: number }>;
-    try { saveGraphStateImmediate(fullSnapshot, hiddenNodes, data, filteredData); } catch {}
-  // Also store a version snapshot for undo (debounced via effect cadence)
-  try { pushHistory(fileKey ?? null, makeSnapshot()); refreshCanUndo(); } catch {}
+    try { saveGraphStateImmediate(fullSnapshot, hiddenNodes, data, filteredData); } catch { }
+    // Also store a version snapshot for undo (debounced via effect cadence)
+    try { console.log('push history'); pushHistory(fileKey ?? null, makeSnapshot()); refreshCanUndo(); } catch { }
   }, [filters, hiddenNodes, positions, filteredData]);
 
   // 🔹 Filter options (dependent on other selections and neighborhood)
@@ -430,23 +462,21 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       data.forEach((row) => {
         // neighborhood filter: if set, only consider rows that directly connect any selected neighborhood node to its immediate neighbors
         if (neighborhoodNodes && neighborhoodNodes.length > 0) {
-          const gm = graphModelRef.current;
-          const parentMap: Record<string, string[]> = {};
-          const childMap: Record<string, string[]> = {};
-          neighborhoodNodes.forEach((s) => {
-            if (gm) {
-              parentMap[s] = gm.getParents(s);
-              childMap[s] = gm.getChildren(s);
-            } else {
-              parentMap[s] = data.filter(d => d.childTableName === s).map(d => d.parentTableName);
-              childMap[s] = data.filter(d => d.parentTableName === s).map(d => d.childTableName);
-            }
+          const allAncestors = new Set<string>();
+          const allDescendants = new Set<string>();
+
+          // Use the same getAllAncestors and getAllDescendants functions here
+          neighborhoodNodes.forEach(nodeId => {
+            getAllAncestors(nodeId).forEach(ancestor => allAncestors.add(ancestor));
+            getAllDescendants(nodeId).forEach(descendant => allDescendants.add(descendant));
+            allAncestors.add(nodeId);
+            allDescendants.add(nodeId);
           });
-          const isDirectNeighbourRow = neighborhoodNodes.some((s) => (
-            (row.parentTableName === s && childMap[s]?.includes(row.childTableName)) ||
-            (row.childTableName === s && parentMap[s]?.includes(row.parentTableName))
-          ));
-          if (!isDirectNeighbourRow) return;
+
+          const parentInChain = allAncestors.has(row.parentTableName) || allDescendants.has(row.parentTableName);
+          const childInChain = allAncestors.has(row.childTableName) || allDescendants.has(row.childTableName);
+
+          if (!(parentInChain && childInChain)) return;
         }
 
         const passesOtherFilters = Object.entries(filters).every(([fCol, val]) => {
@@ -516,7 +546,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       };
       pushHistory(fileKey ?? null, snap);
       refreshCanUndo();
-    } catch {}
+    } catch { }
   };
 
   // 🔹 Unhide node function
@@ -547,7 +577,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       };
       pushHistory(fileKey ?? null, snap);
       refreshCanUndo();
-    } catch {}
+    } catch { }
   };
 
   // 🔹 Build nodes & edges
@@ -563,11 +593,11 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
     const createdEdges: any[] = [];
 
     // helper to pick handle based on layout axis for straighter orthogonal edges
-    const getClosestHandle = (nodePos: { x: number; y: number } | undefined, otherCenter: { x: number; y: number }) => {
+    const getClosestHandle = (nodePos: { x: number; y: number, id: string } | undefined, otherCenter: { x: number; y: number }) => {
+      console.log(`${nodePos?.id}`)
       const vertical = layoutDirection === 'TB' || layoutDirection === 'BT';
       if (!nodePos) return vertical ? 'top' : 'left';
-      const nodeHeight = 50;
-      const center = { x: nodePos.x + nodeWidth / 2, y: nodePos.y + nodeHeight / 2 };
+      const center = { x: nodePos.x + nodeWidth / 2, y: nodePos.y / 2 };
       if (vertical) {
         return otherCenter.y < center.y ? 'top' : 'bottom';
       }
@@ -578,14 +608,16 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       const { childTableName: child, parentTableName: parent, relationship } = row;
       if (!child || !parent) return;
 
-      // Reverse: treat parent as child, child as parent
-    if (!hiddenNodes.has(parent) && !nodeMap[parent]) {
+      // Create parent node
+      if (!hiddenNodes.has(parent) && !nodeMap[parent]) {
         nodeMap[parent] = true;
+        const parentLabel = `${parent} (${row.parentTableType})`;
+
         createdNodes.push({
           id: parent,
-      type: 'fourHandle',
+          type: 'fourHandle',
           data: {
-            label: `${parent} (${row.parentTableType})`,
+            label: parentLabel,
             details: filteredData.filter(
               (rel) => rel.parentTableName === parent || rel.childTableName === parent
             ),
@@ -596,17 +628,27 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
             borderRadius: "8px",
             border: "1px solid #999",
             background: getColorFor('table', row.parentTableType) || "#fff",
+            width: nodeWidth,
+            height: "auto",
+            minHeight: "50px",
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            overflow: 'hidden',
           },
         });
       }
 
-    if (!hiddenNodes.has(child) && !nodeMap[child]) {
+      // Create child node
+      if (!hiddenNodes.has(child) && !nodeMap[child]) {
         nodeMap[child] = true;
+        const childLabel = `${child} (${row.childTableType})`;
+
         createdNodes.push({
-      type: 'fourHandle',
+          type: 'fourHandle',
           id: child,
           data: {
-            label: `${child} (${row.childTableType})`,
+            label: childLabel,
             details: filteredData.filter(
               (rel) => rel.parentTableName === child || rel.childTableName === child
             ),
@@ -617,18 +659,33 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
             borderRadius: "8px",
             border: "1px solid #999",
             background: getColorFor('table', row.childTableType) || "#fff",
+            width: nodeWidth,
+            height: "auto",
+            minHeight: "50px",
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            overflow: 'hidden',
           },
         });
       }
 
+      // Create edges with proper handle positioning based on dynamic heights
       if (!hiddenNodes.has(parent) && !hiddenNodes.has(child)) {
-        // determine centers
         const parentPos = createdNodes.find(n => n.id === parent)?.position || positions[parent];
         const childPos = createdNodes.find(n => n.id === child)?.position || positions[child];
-        const parentCenter = parentPos ? { x: parentPos.x + nodeWidth / 2, y: parentPos.y + 25 } : { x: 0, y: 0 };
-        const childCenter = childPos ? { x: childPos.x + nodeWidth / 2, y: childPos.y + 25 } : { x: 0, y: 0 };
-        const sourceHandle = getClosestHandle(parentPos, childCenter);
-        const targetHandle = getClosestHandle(childPos, parentCenter);
+        const parentCenter = parentPos ? {
+          x: parentPos.x + nodeWidth / 2,
+          y: parentPos.y / 2
+        } : { x: 0, y: 0 };
+        const childCenter = childPos ? {
+          x: childPos.x + nodeWidth / 2,
+          y: childPos.y  / 2
+        } : { x: 0, y: 0 };
+
+        const sourceHandle = getClosestHandle({ ...parentPos, id: parent }, childCenter);
+        const targetHandle = getClosestHandle({ ...childPos, id: child }, parentCenter);
+
         createdEdges.push({
           id: `e-${parent}-${child}-${index}`,
           source: parent,
@@ -648,11 +705,10 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       }
     });
 
-    // Add bridging edges for hidden intermediary nodes: for each hidden node, connect its parents -> its children
+    // Handle bridging edges for hidden nodes (update to use dynamic heights)
     if (hiddenNodes.size > 0) {
       const hiddenArray = Array.from(hiddenNodes);
       for (const hidden of hiddenArray) {
-        // Prefer using stored positions/state if available
         const stored = (() => {
           try {
             const s = localStorage.getItem(getStorageKey('graph_node_state'));
@@ -661,22 +717,29 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
         })();
         const parents = stored?.parents?.filter(Boolean) || data.filter((d) => d.childTableName === hidden).map((d) => d.parentTableName).filter(Boolean);
         const children = stored?.children?.filter(Boolean) || data.filter((d) => d.parentTableName === hidden).map((d) => d.childTableName).filter(Boolean);
+
         for (const p of parents) {
           for (const c of children) {
-            // only create if both p and c are not hidden
             if (!hiddenNodes.has(p) && !hiddenNodes.has(c)) {
               const id = `bridge-${p}-${c}`;
               if (!createdEdges.find((e) => e.id === id)) {
-                // find a representative relationship type between p and hidden or hidden and c
                 const relRow = data.find((d) => d.parentTableName === p && d.childTableName === hidden) || data.find((d) => d.parentTableName === hidden && d.childTableName === c);
                 const rel = relRow ? relRow.relationship : '';
-                // compute handle selection for bridging edges
+
                 const pPos = createdNodes.find(n => n.id === p)?.position || positions[p];
                 const cPos = createdNodes.find(n => n.id === c)?.position || positions[c];
-                const pCenter = pPos ? { x: pPos.x + nodeWidth / 2, y: pPos.y + 25 } : { x: 0, y: 0 };
-                const cCenter = cPos ? { x: cPos.x + nodeWidth / 2, y: cPos.y + 25 } : { x: 0, y: 0 };
-                const sHandle = getClosestHandle(pPos, cCenter);
-                const tHandle = getClosestHandle(cPos, pCenter);
+                const pCenter = pPos ? {
+                  x: pPos.x + nodeWidth / 2,
+                  y: pPos.y / 2
+                } : { x: 0, y: 0 };
+                const cCenter = cPos ? {
+                  x: cPos.x + nodeWidth / 2,
+                  y: cPos.y / 2
+                } : { x: 0, y: 0 };
+
+                const sHandle = getClosestHandle({ ...pPos, id: p }, cCenter);
+                const tHandle = getClosestHandle({ ...cPos, id: c }, pCenter);
+
                 createdEdges.push({
                   id,
                   source: p,
@@ -698,12 +761,13 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
     const runInitialLayout = async () => {
       if (Object.keys(positions).length === 0 && hiddenNodes.size === 0) {
         try {
+          // Pass node heights to layout function
           const layouted = await getLayoutedElements(createdNodes, createdEdges, layoutDirection);
           setNodes(layouted.nodes as any);
           setEdges(layouted.edges as any);
           setPositions(layouted.nodes.reduce((acc: any, node: any) => { acc[node.id] = node.position; return acc; }, {}));
           return;
-        } catch {}
+        } catch { }
       }
       setNodes(createdNodes);
       setEdges(createdEdges);
@@ -747,7 +811,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
           };
           pushHistory(fileKey ?? null, snap);
           refreshCanUndo();
-        } catch {}
+        } catch { }
       }
     }
   }, [onNodesChange, debouncedSaveGraphState, nodes, hiddenNodes, data, filteredData]);
@@ -765,6 +829,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       style: {
         ...n.style,
         border: hoveredNode === n.id ? "2px solid #1976d2" : "1px solid #90caf9",
+        padding: 8,
         // color by table type (inspect details)
         background: (() => {
           if (hiddenNodes.has(n.id)) return "#e3e3e3";
@@ -816,13 +881,24 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
               }
             }}
           >
-            <span style={{
-              display: 'block',
-              maxWidth: nodeWidth - 20, // Account for padding
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap'
-            }}>{n.data.label}</span>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: '100%',
+              height: '100%',
+              padding: '8px',
+              textAlign: 'center',
+              fontSize: '12px',
+              fontWeight: '500',
+              lineHeight: '1.4',
+              wordWrap: 'break-word',
+              overflowWrap: 'anywhere',
+              whiteSpace: 'normal',
+              boxSizing: 'border-box',
+            }}>
+              {n.data.label}
+            </div>
           </Tooltip>
         ),
       },
@@ -842,6 +918,8 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
   // Memoize nodeTypes to avoid recreating the object on every render (prevents React Flow warnings)
   const nodeTypesMemo = useMemo(() => ({ fourHandle: FourHandleNode }), []);
 
+  async function simplifyGraph() { const visibleNodes = nodes.filter(n => !hiddenNodes.has(n.id)); const visibleEdges = edges.filter(e => !hiddenNodes.has(e.source) && !hiddenNodes.has(e.target)); try { const layouted = await getLayoutedElements(visibleNodes, visibleEdges, layoutDirection); const newPositions = { ...positions }; layouted.nodes.forEach((n: any) => { if (n.position && typeof n.position.x === 'number' && typeof n.position.y === 'number') { newPositions[n.id] = { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }; } }); setPositions(newPositions); const layoutPos = Object.fromEntries(layouted.nodes.map((n: any) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }])); const fullSnapshot = { ...positions, ...layoutPos } as Record<string, { x: number; y: number }>; debouncedSaveGraphState(fullSnapshot, hiddenNodes, data, filteredData); try { pushHistory(fileKey ?? null, { positions: newPositions, hidden: Array.from(hiddenNodes), filters, layoutDirection, timestamp: Date.now() }); refreshCanUndo(); } catch { } } catch { } }
+
   return (
     <div style={{ width: '100vw', background: PEPSI_LIGHT }}>
 
@@ -854,7 +932,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       </Box>
 
       {/* Filters ribbon */}
-  <Box sx={{ px: 3, py: 2, background: PEPSI_BG_LIGHT, borderBottom: '1px solid rgba(0,0,0,0.06)' }}>
+      <Box sx={{ px: 3, py: 2, background: PEPSI_BG_LIGHT, borderBottom: '1px solid rgba(0,0,0,0.06)' }}>
         <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
           {columns.map((col) => (
             <Box key={col} sx={{ minWidth: 220 }}>
@@ -940,21 +1018,19 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
           <Button variant="contained" onClick={() => {
             const liveNodePositions = Object.fromEntries(nodes.map((n) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }]));
             const fullSnapshot = { ...positions, ...liveNodePositions } as Record<string, { x: number; y: number }>;
-            try { saveGraphStateImmediate(fullSnapshot, hiddenNodes, data, filteredData); } catch {}
-            try { localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(filters)); } catch {}
+            try { saveGraphStateImmediate(fullSnapshot, hiddenNodes, data, filteredData); } catch { }
+            try { localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(filters)); } catch { }
           }} sx={{ fontWeight: 'bold', backgroundColor: '#FFC107', color: '#000', '&:hover': { backgroundColor: '#e0a800' } }}>
             <SaveOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Save Node Positions
           </Button>
           <Button variant="contained" onClick={() => navigate('/')} sx={{ fontWeight: 'bold', backgroundColor: '#0055A4', color: '#fff', '&:hover': { backgroundColor: '#004080' } }}>
             <UploadFileOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Upload CSV
           </Button>
-          <Button variant="contained" onClick={async () => { const visibleNodes = nodes.filter(n => !hiddenNodes.has(n.id)); const visibleEdges = edges.filter(e => !hiddenNodes.has(e.source) && !hiddenNodes.has(e.target)); try { const layouted = await getLayoutedElements(visibleNodes, visibleEdges, layoutDirection); const newPositions = { ...positions }; layouted.nodes.forEach((n: any) => { if (n.position && typeof n.position.x === 'number' && typeof n.position.y === 'number') { newPositions[n.id] = { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }; } }); setPositions(newPositions); const layoutPos = Object.fromEntries(layouted.nodes.map((n: any) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }])); const fullSnapshot = { ...positions, ...layoutPos } as Record<string, { x: number; y: number }>; debouncedSaveGraphState(fullSnapshot, hiddenNodes, data, filteredData); try { pushHistory(fileKey ?? null, { positions: newPositions, hidden: Array.from(hiddenNodes), filters, layoutDirection, timestamp: Date.now() }); refreshCanUndo(); } catch {} } catch {} }} sx={{ fontWeight: 'bold', backgroundColor: PEPSI_BLUE, '&:hover': { backgroundColor: '#00356a' } }}>
+          <Button variant="contained" onClick={() => { simplifyGraph() }} sx={{ fontWeight: 'bold', backgroundColor: PEPSI_BLUE, '&:hover': { backgroundColor: '#00356a' } }}>
             <AutoAwesomeOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Simplify Graph
           </Button>
         </Box>
       </Box>
-
-      
 
       {/* Legend + layout / history controls */}
       <Box sx={{ px: 3, py: 2, background: '#f9fbff', borderTop: '1px solid #e0e0e0' }}>
@@ -965,7 +1041,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
               <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
                 {Object.keys(tableTypeMap).length === 0 && <Typography variant="body2">No table types</Typography>}
                 {Object.entries(tableTypeMap).map(([t, c]) => (
-                    <label key={t} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', borderRadius: 16, background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
+                  <label key={t} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', borderRadius: 16, background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
                     <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 6, background: c }} />
                     <span style={{ fontSize: 13, color: '#222' }}>{t}</span>
                   </label>
@@ -977,7 +1053,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
               <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
                 {Object.keys(relTypeMap).length === 0 && <Typography variant="body2">No relationship types</Typography>}
                 {Object.entries(relTypeMap).map(([t, c]) => (
-                    <label key={t} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', borderRadius: 16, background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
+                  <label key={t} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', borderRadius: 16, background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
                     <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 6, background: c }} />
                     <span style={{ fontSize: 13, color: '#222' }}>{t}</span>
                   </label>
@@ -1059,9 +1135,9 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
                     return updated ? ({ ...pn, position: updated.position } as any) : pn;
                   }));
                   const fullSnapshot = Object.fromEntries(layouted.nodes.map((n: any) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }]));
-                  try { saveGraphStateImmediate({ ...positions, ...fullSnapshot }, hiddenNodes, data, filteredData); } catch {}
-                  try { pushHistory(fileKey ?? null, { positions: newPositions, hidden: Array.from(hiddenNodes), filters, layoutDirection, timestamp: Date.now() }); refreshCanUndo(); } catch {}
-                } catch {}
+                  try { saveGraphStateImmediate({ ...positions, ...fullSnapshot }, hiddenNodes, data, filteredData); } catch { }
+                  try { pushHistory(fileKey ?? null, { positions: newPositions, hidden: Array.from(hiddenNodes), filters, layoutDirection, timestamp: Date.now() }); refreshCanUndo(); } catch { }
+                } catch { }
               }}
             />
           </Box>
@@ -1070,9 +1146,8 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
 
       {/* 🔹 Usage Note */}
       <Box sx={{ px: 2, pb: 2 }}>
-        
-      </Box>
 
+      </Box>
 
       {/* 🔹 Graph */}
       <Box sx={{
@@ -1111,7 +1186,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
         </ReactFlow>
       </Box>
 
-  {/* 🔹 Visible Nodes Table */}
+      {/* 🔹 Visible Nodes Table */}
       <Box sx={{
         mx: 2,
         my: 4,
@@ -1185,6 +1260,6 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       </Box>
     </div>
   );
-}; 
+};
 
 export default Graph;

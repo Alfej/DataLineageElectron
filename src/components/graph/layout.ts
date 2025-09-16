@@ -2,7 +2,7 @@ import ELK from 'elkjs/lib/elk.bundled.js';
 import { Node } from 'reactflow';
 
 const nodeWidth = 180;
-const nodeHeight = 50;
+const defaultNodeHeight = 50;
 
 // Cache ELK instance (it's stateless but reuse is fine)
 const elk = new ELK();
@@ -17,7 +17,13 @@ const directionToElk: Record<string, string> = {
 };
 
 // direction: 'TB' | 'BT' | 'LR' | 'RL'
-export const getLayoutedElements = async (nodes: Node[], edges: any[], direction: string = 'TB') => {
+// nodeHeights: optional map of node ID to height
+export const getLayoutedElements = async (
+  nodes: Node[], 
+  edges: any[], 
+  direction: string = 'TB',
+  nodeHeights?: Record<string, number>
+) => {
   const elkDirection = directionToElk[direction] || 'DOWN';
 
   const graph = {
@@ -27,13 +33,20 @@ export const getLayoutedElements = async (nodes: Node[], edges: any[], direction
       'elk.layered.spacing.nodeNodeBetweenLayers': '80',
       'elk.spacing.nodeNode': '50',
       'elk.direction': elkDirection,
+      // Additional options to handle varying node heights
+      'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
+      'elk.layered.unnecessaryBendpoints': 'true',
     },
     children: nodes.map((n) => ({
       id: n.id,
       width: nodeWidth,
-      height: nodeHeight,
+      height: nodeHeights?.[n.id] || defaultNodeHeight,
     })),
-    edges: edges.map((e) => ({ id: e.id || `${e.source}__${e.target}`, sources: [e.source], targets: [e.target] })),
+    edges: edges.map((e) => ({ 
+      id: e.id || `${e.source}__${e.target}`, 
+      sources: [e.source], 
+      targets: [e.target] 
+    })),
   } as any;
 
   let layouted: any;
@@ -49,9 +62,19 @@ export const getLayoutedElements = async (nodes: Node[], edges: any[], direction
     const gNode = layouted.children.find((c: any) => c.id === node.id) || { x: 0, y: 0 };
     const px = typeof gNode.x === 'number' ? Number(gNode.x) : 0;
     const py = typeof gNode.y === 'number' ? Number(gNode.y) : 0;
+    
+    // Preserve the dynamic height in the returned node
+    const nodeHeight = nodeHeights?.[node.id] || defaultNodeHeight;
+    
     return {
       ...node,
       position: { x: px, y: py },
+      style: {
+        ...node.style,
+        width: nodeWidth,
+        height: nodeHeight,
+        minHeight: nodeHeight,
+      }
     };
   });
 

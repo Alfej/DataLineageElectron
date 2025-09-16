@@ -2,7 +2,7 @@ import { Handle, Position } from 'reactflow';
 
 function FourHandleNode({ data }: any) {
   return (
-    <div style={{ padding: 8, borderRadius: 8, background: '#fff', border: '1px solid rgba(0,0,0,0.08)', boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}>
+    <div style={{ width: "100%", padding: 8, borderRadius: 8, background: '#fff', border: '1px solid rgba(0,0,0,0.08)', boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}>
       {data?.label}
 
       {/* target handles (ids match position names so edges can reference 'top'|'left'|'right'|'bottom') */}

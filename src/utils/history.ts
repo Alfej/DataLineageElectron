@@ -123,10 +123,11 @@ export async function undo(fileKey: string | null | undefined): Promise<GraphHis
   const h = await loadHistory(fileKey);
   if (!h || h.entries.length === 0 || h.index <= 0) return null;
 
+  let resultIndex = h.index - 1;
   // Move pointer back to enable redo (don't delete entries)
   h.index = Math.max(0, h.index - 1);
   await saveHistory(fileKey, h);
-  return h.entries[h.index] || null;
+  return h.entries[resultIndex] || null;
 }
 
 export async function canUndo(fileKey: string | null | undefined): Promise<boolean> {
