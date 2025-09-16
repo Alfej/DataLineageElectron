@@ -39,7 +39,6 @@ import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import UploadFileOutlinedIcon from '@mui/icons-material/UploadFileOutlined';
 import { pushHistory, undo as undoHistory, redo as redoHistory, canUndo as canUndoHistory, canRedo as canRedoHistory, GraphHistoryEntry } from '../utils/history';
-import { Height } from "@mui/icons-material";
 
 // PepsiCo palette
 const PEPSI_BLUE = '#004B93';
@@ -594,7 +593,6 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
 
     // helper to pick handle based on layout axis for straighter orthogonal edges
     const getClosestHandle = (nodePos: { x: number; y: number, id: string } | undefined, otherCenter: { x: number; y: number }) => {
-      console.log(`${nodePos?.id}`)
       const vertical = layoutDirection === 'TB' || layoutDirection === 'BT';
       if (!nodePos) return vertical ? 'top' : 'left';
       const center = { x: nodePos.x + nodeWidth / 2, y: nodePos.y / 2 };
