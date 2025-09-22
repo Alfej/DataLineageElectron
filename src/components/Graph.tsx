@@ -29,6 +29,7 @@ import { registerTypesFromData, getColorFor, getAllTypeMaps } from '../utils/typ
 import getLayoutedElements from './graph/layout';
 import LayoutDirection from './LayoutDirection';
 import DownloadButton from './DownloadButton';
+import MaximizeButton from './MaximizeButton';
 import TooltipContent from './graph/TooltipContent';
 import FourHandleNode from './FourHandleNode';
 import { useNavigate } from 'react-router-dom';
@@ -52,6 +53,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
   const getStorageKey = (base: string) => (fileKey ? `${base}::${fileKey}` : base);
   const nodeWidth = 180;
   const navigate = useNavigate();
+  const tooltipContainerRef = useRef<HTMLDivElement | null>(null);
 
   // instantiate GraphModel to prepare traversal helpers (keeps lint happy)
   const graphModelRef = useRef<GraphModel | null>(null);
@@ -94,7 +96,22 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       } catch { }
     }, 300)
   ).current;
-  const getAllAncestors = (nodeId: string, visited = new Set<string>()): string[] => {
+  // Memoized ancestor/descendant calculation for performance
+  const ancestorCache = useRef<Map<string, string[]>>(new Map());
+  const descendantCache = useRef<Map<string, string[]>>(new Map());
+
+  // Clear cache when data changes
+  useEffect(() => {
+    ancestorCache.current.clear();
+    descendantCache.current.clear();
+  }, [data]);
+
+  const getAllAncestors = useCallback((nodeId: string, visited = new Set<string>()): string[] => {
+    // Check cache first
+    if (ancestorCache.current.has(nodeId)) {
+      return ancestorCache.current.get(nodeId)!;
+    }
+
     if (visited.has(nodeId)) return []; // Prevent infinite loops
     visited.add(nodeId);
 
@@ -108,11 +125,18 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       ancestors.push(...getAllAncestors(parent, new Set(visited)));
     });
 
-    return [...new Set(ancestors)]; // Remove duplicates
-  };
+    const result = [...new Set(ancestors)]; // Remove duplicates
+    ancestorCache.current.set(nodeId, result);
+    return result;
+  }, [data]);
 
   // Helper function to recursively get all descendants
-  const getAllDescendants = (nodeId: string, visited = new Set<string>()): string[] => {
+  const getAllDescendants = useCallback((nodeId: string, visited = new Set<string>()): string[] => {
+    // Check cache first
+    if (descendantCache.current.has(nodeId)) {
+      return descendantCache.current.get(nodeId)!;
+    }
+
     if (visited.has(nodeId)) return []; // Prevent infinite loops
     visited.add(nodeId);
 
@@ -126,8 +150,10 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       descendants.push(...getAllDescendants(child, new Set(visited)));
     });
 
-    return [...new Set(descendants)]; // Remove duplicates
-  };
+    const result = [...new Set(descendants)]; // Remove duplicates
+    descendantCache.current.set(nodeId, result);
+    return result;
+  }, [data]);
   // Immediate save helper used for actions that must persist instantly (save button, filter changes)
   const saveGraphStateImmediate = (positionsSnapshot: Record<string, { x: number; y: number }>, hidden: Set<string>, dataRows: TableRelation[], filteredRows: TableRelation[]) => {
     const state: Record<string, any> = {};
@@ -404,18 +430,13 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
     );
 
     if (!neighborhoodNodes || neighborhoodNodes.length === 0) return base;
-    // Build rows that directly connect any selected node to its immediate parents or immediate children.
-    const gm = graphModelRef.current;
-    // For each selected node, collect its immediate parents and children
-    // For each selected node, collect ALL ancestors and descendants
-    const sel = neighborhoodNodes;
+
+    // Optimize: Pre-calculate all ancestors and descendants once
     const allAncestors = new Set<string>();
     const allDescendants = new Set<string>();
 
-    // Helper function to recursively get all ancestors
-
     // Collect all ancestors and descendants for selected nodes
-    sel.forEach(nodeId => {
+    neighborhoodNodes.forEach(nodeId => {
       getAllAncestors(nodeId).forEach(ancestor => allAncestors.add(ancestor));
       getAllDescendants(nodeId).forEach(descendant => allDescendants.add(descendant));
       // Also include the selected node itself
@@ -436,6 +457,55 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
   // Reset page when filters/neighborhood change
   useEffect(() => { setPage(1); }, [filters, neighborhoodNodes, data]);
 
+  // Define simplifyGraph function properly
+  const simplifyGraph = useCallback(async () => {
+    const visibleNodes = nodes.filter(n => !hiddenNodes.has(n.id));
+    const visibleEdges = edges.filter(e => !hiddenNodes.has(e.source) && !hiddenNodes.has(e.target));
+
+
+    try {
+      const layouted = await getLayoutedElements(visibleNodes, visibleEdges, layoutDirection);
+
+      const newPositions = { ...positions };
+      layouted.nodes.forEach((n: any) => {
+        if (n.position && typeof n.position.x === 'number' && typeof n.position.y === 'number') {
+          newPositions[n.id] = { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) };
+        }
+      });
+
+      setPositions(newPositions);
+      setNodes((prevNodes) => prevNodes.map((pn) => {
+        const updated = layouted.nodes.find((ln: any) => ln.id === pn.id);
+        return updated ? ({ ...pn, position: updated.position } as any) : pn;
+      }));
+
+      const layoutPos = Object.fromEntries(layouted.nodes.map((n: any) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }]));
+      const fullSnapshot = { ...positions, ...layoutPos } as Record<string, { x: number; y: number }>;
+      debouncedSaveGraphState(fullSnapshot, hiddenNodes, data, filteredData);
+
+      try {
+        pushHistory(fileKey ?? null, { positions: newPositions, hidden: Array.from(hiddenNodes), filters, layoutDirection, timestamp: Date.now() });
+        refreshCanUndo();
+      } catch (e) {
+      }
+    } catch (e) {
+    }
+  }, [nodes, edges, hiddenNodes, layoutDirection, positions, data, filteredData, debouncedSaveGraphState, fileKey, filters, refreshCanUndo]);
+
+  // Simplify graph when neighborhood changes (with longer delay for filtering to complete)
+  useEffect(() => {
+    if (neighborhoodNodes && neighborhoodNodes.length > 0) {
+      // Longer delay to ensure the filtered data has been updated and rendering is complete
+      const timer = setTimeout(() => {
+        simplifyGraph();
+      }, 1000); // Increased delay to 1 second
+      return () => {
+        clearTimeout(timer);
+      };
+    } else {
+    }
+  }, [neighborhoodNodes, simplifyGraph]);
+
   // Persist filters and latest node state whenever filters/hidden/positions/filteredData change
   useEffect(() => {
     try {
@@ -447,37 +517,38 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
     const fullSnapshot = { ...positions, ...liveNodePositions } as Record<string, { x: number; y: number }>;
     try { saveGraphStateImmediate(fullSnapshot, hiddenNodes, data, filteredData); } catch { }
     // Also store a version snapshot for undo (debounced via effect cadence)
-    try { console.log('push history'); pushHistory(fileKey ?? null, makeSnapshot()); refreshCanUndo(); } catch { }
+    try { pushHistory(fileKey ?? null, makeSnapshot()); refreshCanUndo(); } catch { }
   }, [filters, hiddenNodes, positions, filteredData]);
 
-  // 🔹 Filter options (dependent on other selections and neighborhood)
+  // 🔹 Filter options (dependent on other selections and neighborhood) - optimized
   const filterOptions = useMemo(() => {
     const opts: { [key: string]: string[] } = {};
+
+    // Pre-calculate neighborhood filter once if needed
+    let neighborhoodFilteredRows = data;
+    if (neighborhoodNodes && neighborhoodNodes.length > 0) {
+      const allAncestors = new Set<string>();
+      const allDescendants = new Set<string>();
+
+      neighborhoodNodes.forEach(nodeId => {
+        getAllAncestors(nodeId).forEach(ancestor => allAncestors.add(ancestor));
+        getAllDescendants(nodeId).forEach(descendant => allDescendants.add(descendant));
+        allAncestors.add(nodeId);
+        allDescendants.add(nodeId);
+      });
+
+      neighborhoodFilteredRows = data.filter((row) => {
+        const parentInChain = allAncestors.has(row.parentTableName) || allDescendants.has(row.parentTableName);
+        const childInChain = allAncestors.has(row.childTableName) || allDescendants.has(row.childTableName);
+        return parentInChain && childInChain;
+      });
+    }
 
     columns.forEach((col) => {
       const values = new Set<string>();
 
       // For each row, check whether it passes current filters except for this column
-      data.forEach((row) => {
-        // neighborhood filter: if set, only consider rows that directly connect any selected neighborhood node to its immediate neighbors
-        if (neighborhoodNodes && neighborhoodNodes.length > 0) {
-          const allAncestors = new Set<string>();
-          const allDescendants = new Set<string>();
-
-          // Use the same getAllAncestors and getAllDescendants functions here
-          neighborhoodNodes.forEach(nodeId => {
-            getAllAncestors(nodeId).forEach(ancestor => allAncestors.add(ancestor));
-            getAllDescendants(nodeId).forEach(descendant => allDescendants.add(descendant));
-            allAncestors.add(nodeId);
-            allDescendants.add(nodeId);
-          });
-
-          const parentInChain = allAncestors.has(row.parentTableName) || allDescendants.has(row.parentTableName);
-          const childInChain = allAncestors.has(row.childTableName) || allDescendants.has(row.childTableName);
-
-          if (!(parentInChain && childInChain)) return;
-        }
-
+      neighborhoodFilteredRows.forEach((row) => {
         const passesOtherFilters = Object.entries(filters).every(([fCol, val]) => {
           if (fCol === col) return true; // ignore current col
           if (!val || (Array.isArray(val) && val.length === 0)) return true;
@@ -678,7 +749,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
         } : { x: 0, y: 0 };
         const childCenter = childPos ? {
           x: childPos.x + nodeWidth / 2,
-          y: childPos.y  / 2
+          y: childPos.y / 2
         } : { x: 0, y: 0 };
 
         const sourceHandle = getClosestHandle({ ...parentPos, id: parent }, childCenter);
@@ -863,6 +934,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
             }
             arrow
             placement="right"
+            PopperProps={{ container: tooltipContainerRef.current || undefined, }}
             componentsProps={{
               tooltip: {
                 sx: {
@@ -901,7 +973,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
         ),
       },
     }))
-  ), [nodes, hoveredNode, hiddenNodes, hoveredEdge, edges]);
+  ), [nodes, hoveredNode, hiddenNodes, hoveredEdge, edges, tooltipContainerRef]);
 
   const visualEdges = useMemo(() => (
     edges.map((e) => ({
@@ -915,8 +987,6 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
 
   // Memoize nodeTypes to avoid recreating the object on every render (prevents React Flow warnings)
   const nodeTypesMemo = useMemo(() => ({ fourHandle: FourHandleNode }), []);
-
-  async function simplifyGraph() { const visibleNodes = nodes.filter(n => !hiddenNodes.has(n.id)); const visibleEdges = edges.filter(e => !hiddenNodes.has(e.source) && !hiddenNodes.has(e.target)); try { const layouted = await getLayoutedElements(visibleNodes, visibleEdges, layoutDirection); const newPositions = { ...positions }; layouted.nodes.forEach((n: any) => { if (n.position && typeof n.position.x === 'number' && typeof n.position.y === 'number') { newPositions[n.id] = { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }; } }); setPositions(newPositions); const layoutPos = Object.fromEntries(layouted.nodes.map((n: any) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }])); const fullSnapshot = { ...positions, ...layoutPos } as Record<string, { x: number; y: number }>; debouncedSaveGraphState(fullSnapshot, hiddenNodes, data, filteredData); try { pushHistory(fileKey ?? null, { positions: newPositions, hidden: Array.from(hiddenNodes), filters, layoutDirection, timestamp: Date.now() }); refreshCanUndo(); } catch { } } catch { } }
 
   return (
     <div style={{ width: '100vw', background: PEPSI_LIGHT }}>
@@ -1182,6 +1252,35 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
           />
           <DownloadButton fileName={(fileKey ? `graph-${fileKey}` : 'graph') + '.png'} />
         </ReactFlow>
+        <MaximizeButton>
+          {() => (
+            <Box
+              ref={tooltipContainerRef}
+              sx={{ width: '100%', height: '100%', backgroundColor: 'white', display: 'flex' }}
+            >
+              <ReactFlow
+                nodes={visualNodes}      // visualNodes depends on hiddenNodes
+                edges={visualEdges}
+                onNodesChange={handleNodesChange}
+                onEdgesChange={onEdgesChange}
+                onNodeContextMenu={onNodeContextMenu}
+                nodeTypes={nodeTypesMemo}
+                minZoom={0.001}
+                maxZoom={5}
+                fitView
+              >
+                <Background color="#e3f2fd" />
+                <Controls style={{ background: "#e3f2fd", borderRadius: 8 }} />
+                <MiniMap
+                  nodeColor={(n) => (hiddenNodes.has(n.id) ? "#bdbdbd" : "#1976d2")}
+                  nodeStrokeColor={(n) => (hoveredNode === n.id ? "#ff9800" : "#1976d2")}
+                  maskColor="rgba(33,150,243,0.1)"
+                />
+              </ReactFlow>
+            </Box>
+          )}
+        </MaximizeButton>
+
       </Box>
 
       {/* 🔹 Visible Nodes Table */}
