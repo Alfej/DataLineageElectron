@@ -7,6 +7,8 @@ export type GraphHistoryEntry = {
   hidden: string[];
   filters: FiltersState;
   layoutDirection: string;
+  neighborhoodNodes: string[];
+  selectedNeighborhoodNodes?: string[]; // User's original selection before expansion
   timestamp: number;
   _sig?: string; // internal hash signature for dedupe
 };
@@ -23,11 +25,13 @@ let dbPromise: Promise<IDBPDatabase<any>> | null = null;
 
 async function getDB() {
   if (!dbPromise) {
-    dbPromise = openDB(DB_NAME, 1, {
+    dbPromise = openDB(DB_NAME, 2, { // Increment version to handle existing databases
       upgrade(db) {
+        // Handle version upgrades gracefully
         if (!db.objectStoreNames.contains(STORE)) {
           db.createObjectStore(STORE);
         }
+        // If upgrading from version 1 to 2, we can add any new indices or stores here if needed
       },
     });
   }
@@ -74,7 +78,7 @@ export async function pushHistory(
     h.entries = h.entries.slice(0, h.index + 1);
   }
 
-  // build a compact signature: counts + first 20 node coords + hidden length + filter keys + layoutDirection
+  // build a compact signature: counts + first 20 node coords + hidden length + filter keys + layoutDirection + neighborhood
   const buildSig = (e: GraphHistoryEntry) => {
     const posKeys = Object.keys(e.positions).sort();
     const head = posKeys.slice(0, 20).map(k => {
@@ -83,7 +87,8 @@ export async function pushHistory(
     }).join('|');
     const hiddenSize = e.hidden.length;
     const filterSig = Object.keys(e.filters).sort().map(k => `${k}:${(e.filters[k]||[]).length}`).join(',');
-    return `${posKeys.length}|${hiddenSize}|${filterSig}|${e.layoutDirection}|${head}`;
+    const neighborhoodSig = (e.neighborhoodNodes || []).sort().join(',');
+    return `${posKeys.length}|${hiddenSize}|${filterSig}|${e.layoutDirection}|${neighborhoodSig}|${head}`;
   };
   entry._sig = buildSig(entry);
 
@@ -102,7 +107,9 @@ export async function pushHistory(
       const b = last.positions[k];
       if (a && b) delta += Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
     }
-    if (delta < 2 && entry.layoutDirection === last.layoutDirection && entry.hidden.length === last.hidden.length) {
+    if (delta < 2 && entry.layoutDirection === last.layoutDirection && 
+        entry.hidden.length === last.hidden.length &&
+        JSON.stringify((entry.neighborhoodNodes || []).sort()) === JSON.stringify((last.neighborhoodNodes || []).sort())) {
       return; // skip near-no-op move
     }
   }

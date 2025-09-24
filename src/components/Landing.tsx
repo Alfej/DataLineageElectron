@@ -46,7 +46,7 @@ export default function Landing() {
     <Box sx={{ width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column', background: '#BCC5E1' }}>
       {/* header */}
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 3, py: 2, background: '#fff', boxShadow: 2 }}>
-        <Typography variant="h4" sx={{ fontWeight: 800, color: '#1565c0' }}>Data Lineage Visualization</Typography>
+        <Typography variant="h4" sx={{ fontWeight: 800, color: '#1565c0' }}>Lineage Visualization</Typography>
         <Box>
           <img src={logo} alt="logo" style={{ height: 56 }} />
         </Box>

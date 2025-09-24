@@ -1,10 +1,12 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import ReactFlow, {
   Background,
-  Controls,
   MiniMap,
+  Panel,
   useEdgesState,
   useNodesState,
+  useReactFlow,
+  ReactFlowProvider,
   MarkerType,
 } from "reactflow";
 import "reactflow/dist/style.css";
@@ -29,7 +31,8 @@ import { registerTypesFromData, getColorFor, getAllTypeMaps } from '../utils/typ
 import getLayoutedElements from './graph/layout';
 import LayoutDirection from './LayoutDirection';
 import DownloadButton from './DownloadButton';
-import MaximizeButton from './MaximizeButton';
+import SearchNode from './SearchNode';
+import AnimatedControls from './AnimatedControls';
 import TooltipContent from './graph/TooltipContent';
 import FourHandleNode from './FourHandleNode';
 import { useNavigate } from 'react-router-dom';
@@ -39,7 +42,11 @@ import SettingsBackupRestoreOutlinedIcon from '@mui/icons-material/SettingsBacku
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import UploadFileOutlinedIcon from '@mui/icons-material/UploadFileOutlined';
-import { pushHistory, undo as undoHistory, redo as redoHistory, canUndo as canUndoHistory, canRedo as canRedoHistory, GraphHistoryEntry } from '../utils/history';
+import CloseIcon from '@mui/icons-material/Close';
+import UndoOutlined from '@mui/icons-material/UndoOutlined';
+import RedoOutlined from '@mui/icons-material/RedoOutlined';
+import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
+import { pushHistory, undo as undoHistory, redo as redoHistory, canUndo as canUndoHistory, canRedo as canRedoHistory, ensureInitial, GraphHistoryEntry } from '../utils/history';
 
 // PepsiCo palette
 const PEPSI_BLUE = '#004B93';
@@ -49,11 +56,11 @@ const PEPSI_BG_LIGHT = '#EAF3FF';
 // GraphModel provides traversal utilities for the data
 // TooltipContent renders node tooltip details
 
-const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | null }) => {
+const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | null }) => {
+  const { fitView } = useReactFlow();
   const getStorageKey = (base: string) => (fileKey ? `${base}::${fileKey}` : base);
   const nodeWidth = 180;
   const navigate = useNavigate();
-  const tooltipContainerRef = useRef<HTMLDivElement | null>(null);
 
   // instantiate GraphModel to prepare traversal helpers (keeps lint happy)
   const graphModelRef = useRef<GraphModel | null>(null);
@@ -96,22 +103,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       } catch { }
     }, 300)
   ).current;
-  // Memoized ancestor/descendant calculation for performance
-  const ancestorCache = useRef<Map<string, string[]>>(new Map());
-  const descendantCache = useRef<Map<string, string[]>>(new Map());
-
-  // Clear cache when data changes
-  useEffect(() => {
-    ancestorCache.current.clear();
-    descendantCache.current.clear();
-  }, [data]);
-
-  const getAllAncestors = useCallback((nodeId: string, visited = new Set<string>()): string[] => {
-    // Check cache first
-    if (ancestorCache.current.has(nodeId)) {
-      return ancestorCache.current.get(nodeId)!;
-    }
-
+  const getAllAncestors = (nodeId: string, visited = new Set<string>()): string[] => {
     if (visited.has(nodeId)) return []; // Prevent infinite loops
     visited.add(nodeId);
 
@@ -125,18 +117,11 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       ancestors.push(...getAllAncestors(parent, new Set(visited)));
     });
 
-    const result = [...new Set(ancestors)]; // Remove duplicates
-    ancestorCache.current.set(nodeId, result);
-    return result;
-  }, [data]);
+    return [...new Set(ancestors)]; // Remove duplicates
+  };
 
   // Helper function to recursively get all descendants
-  const getAllDescendants = useCallback((nodeId: string, visited = new Set<string>()): string[] => {
-    // Check cache first
-    if (descendantCache.current.has(nodeId)) {
-      return descendantCache.current.get(nodeId)!;
-    }
-
+  const getAllDescendants = (nodeId: string, visited = new Set<string>()): string[] => {
     if (visited.has(nodeId)) return []; // Prevent infinite loops
     visited.add(nodeId);
 
@@ -150,10 +135,8 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       descendants.push(...getAllDescendants(child, new Set(visited)));
     });
 
-    const result = [...new Set(descendants)]; // Remove duplicates
-    descendantCache.current.set(nodeId, result);
-    return result;
-  }, [data]);
+    return [...new Set(descendants)]; // Remove duplicates
+  };
   // Immediate save helper used for actions that must persist instantly (save button, filter changes)
   const saveGraphStateImmediate = (positionsSnapshot: Record<string, { x: number; y: number }>, hidden: Set<string>, dataRows: TableRelation[], filteredRows: TableRelation[]) => {
     const state: Record<string, any> = {};
@@ -224,8 +207,17 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
 
   // Neighborhood filter (multi-select: choose nodes to focus on their immediate parents + children)
   const [neighborhoodNodes, setNeighborhoodNodes] = useState<string[]>([]);
+  const [selectedNeighborhoodNodes, setSelectedNeighborhoodNodes] = useState<string[]>([]);
   const [canUndo, setCanUndo] = useState<boolean>(false);
   const [canRedo, setCanRedo] = useState<boolean>(false);
+  
+  // Fullscreen state for expanded graph view
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [isAnimating, setIsAnimating] = useState<boolean>(false);
+  // Force refresh key for ReactFlow instances to prevent conflicts
+  const [refreshKey, setRefreshKey] = useState<number>(0);
+  // Highlighted node from search
+  const [highlightedNode, setHighlightedNode] = useState<string | null>(null);
 
   // Pagination for the table
   const [page, setPage] = useState<number>(1);
@@ -235,6 +227,14 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
     try { setCanUndo(await canUndoHistory(fileKey ?? null)); } catch { setCanUndo(false); }
     try { setCanRedo(await canRedoHistory(fileKey ?? null)); } catch { setCanRedo(false); }
   }, [fileKey]);
+
+  // Helper function to push history and immediately refresh undo/redo state
+  const pushHistoryAndRefresh = useCallback(async (entry: GraphHistoryEntry) => {
+    try {
+      await pushHistory(fileKey ?? null, entry);
+      await refreshCanUndo();
+    } catch { }
+  }, [fileKey, refreshCanUndo]);
 
   // refreshCanRedo logic merged into refreshCanUndo
 
@@ -270,10 +270,12 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       hidden: Array.from(hiddenNodes),
       filters,
       layoutDirection,
+      neighborhoodNodes: [...neighborhoodNodes],
+      selectedNeighborhoodNodes: [...selectedNeighborhoodNodes],
       timestamp: Date.now(),
     };
-  }, [nodes, positions, hiddenNodes, filters, layoutDirection]);
-  const resetHiddenNodes = () => {
+  }, [nodes, positions, hiddenNodes, filters, layoutDirection, neighborhoodNodes, selectedNeighborhoodNodes]);
+  const resetHiddenNodes = async () => {
     try {
       const stored = localStorage.getItem(getStorageKey("graph_node_state"));
       if (stored) {
@@ -294,13 +296,29 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
     } catch { }
     setHiddenNodes(new Set());
     // push history after reset
-    try { pushHistory(fileKey ?? null, makeSnapshot()); refreshCanUndo(); } catch { }
+    try { await pushHistoryAndRefresh(makeSnapshot()); } catch { }
   };
-  // 🔹 Right-click to hide node
-  const onNodeContextMenu = useCallback((event: React.MouseEvent, node: any) => {
-    event.preventDefault();
-    if (!hiddenNodes.has(node.id)) hideNode(node.id);
-  }, [hiddenNodes]);
+  // Helper function to get immediate parents and children from localStorage
+  const getImmediateFamily = (nodeId: string): { parents: string[], children: string[] } => {
+    try {
+      const stored = localStorage.getItem(getStorageKey("graph_node_state"));
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        const nodeData = parsed[nodeId];
+        if (nodeData) {
+          return {
+            parents: nodeData.parents || [],
+            children: nodeData.children || []
+          };
+        }
+      }
+    } catch { }
+    
+    // Fallback to data if localStorage doesn't have the info
+    const parents = data.filter((d) => d.childTableName === nodeId).map((d) => d.parentTableName).filter(Boolean);
+    const children = data.filter((d) => d.parentTableName === nodeId).map((d) => d.childTableName).filter(Boolean);
+    return { parents, children };
+  };
 
   // 🔹 Extract dynamic columns and initialize/restore filters
   useEffect(() => {
@@ -332,6 +350,18 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       // ensure initial history snapshot once positions are available later
     }
   }, [data]);
+
+  // 🔹 Initialize history when component loads with data
+  useEffect(() => {
+    if (data && data.length > 0 && Object.keys(positions).length > 0) {
+      // Ensure we have an initial history entry
+      try {
+        ensureInitial(fileKey ?? null, makeSnapshot()).then(() => {
+          refreshCanUndo();
+        });
+      } catch { }
+    }
+  }, [data, positions, fileKey, makeSnapshot, refreshCanUndo]);
 
   // 🔹 Restore positions and hidden nodes from localStorage on mount, else use Dagre
   useEffect(() => {
@@ -430,125 +460,58 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
     );
 
     if (!neighborhoodNodes || neighborhoodNodes.length === 0) return base;
-
-    // Optimize: Pre-calculate all ancestors and descendants once
-    const allAncestors = new Set<string>();
-    const allDescendants = new Set<string>();
-
-    // Collect all ancestors and descendants for selected nodes
-    neighborhoodNodes.forEach(nodeId => {
-      getAllAncestors(nodeId).forEach(ancestor => allAncestors.add(ancestor));
-      getAllDescendants(nodeId).forEach(descendant => allDescendants.add(descendant));
-      // Also include the selected node itself
-      allAncestors.add(nodeId);
-      allDescendants.add(nodeId);
-    });
+    
+    // For neighborhood filter, we want only immediate family (not recursive ancestors/descendants)
+    // The neighborhoodNodes array should already contain: [selectedNode, ...immediateParents, ...immediateChildren]
+    const allowedNodes = new Set(neighborhoodNodes);
 
     return base.filter((row) => {
-      // Include row if it connects any node in the complete ancestry/descendancy chain
-      const parentInChain = allAncestors.has(row.parentTableName) || allDescendants.has(row.parentTableName);
-      const childInChain = allAncestors.has(row.childTableName) || allDescendants.has(row.childTableName);
-
-      // Include the row if both parent and child are part of the selected nodes' complete family tree
-      return parentInChain && childInChain;
+      // Include row only if both parent and child are in the allowed nodes set
+      return allowedNodes.has(row.parentTableName) && allowedNodes.has(row.childTableName);
     });
   }, [data, filters, neighborhoodNodes]);
 
   // Reset page when filters/neighborhood change
   useEffect(() => { setPage(1); }, [filters, neighborhoodNodes, data]);
 
-  // Define simplifyGraph function properly
-  const simplifyGraph = useCallback(async () => {
-    const visibleNodes = nodes.filter(n => !hiddenNodes.has(n.id));
-    const visibleEdges = edges.filter(e => !hiddenNodes.has(e.source) && !hiddenNodes.has(e.target));
-
-
-    try {
-      const layouted = await getLayoutedElements(visibleNodes, visibleEdges, layoutDirection);
-
-      const newPositions = { ...positions };
-      layouted.nodes.forEach((n: any) => {
-        if (n.position && typeof n.position.x === 'number' && typeof n.position.y === 'number') {
-          newPositions[n.id] = { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) };
-        }
-      });
-
-      setPositions(newPositions);
-      setNodes((prevNodes) => prevNodes.map((pn) => {
-        const updated = layouted.nodes.find((ln: any) => ln.id === pn.id);
-        return updated ? ({ ...pn, position: updated.position } as any) : pn;
-      }));
-
-      const layoutPos = Object.fromEntries(layouted.nodes.map((n: any) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }]));
-      const fullSnapshot = { ...positions, ...layoutPos } as Record<string, { x: number; y: number }>;
-      debouncedSaveGraphState(fullSnapshot, hiddenNodes, data, filteredData);
-
+  // Persist filters and latest node state whenever filters/hidden/positions/filteredData/neighborhoodNodes change
+  useEffect(() => {
+    (async () => {
       try {
-        pushHistory(fileKey ?? null, { positions: newPositions, hidden: Array.from(hiddenNodes), filters, layoutDirection, timestamp: Date.now() });
-        refreshCanUndo();
-      } catch (e) {
-      }
-    } catch (e) {
-    }
-  }, [nodes, edges, hiddenNodes, layoutDirection, positions, data, filteredData, debouncedSaveGraphState, fileKey, filters, refreshCanUndo]);
+        localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(filters));
+      } catch { }
 
-  // Simplify graph when neighborhood changes (with longer delay for filtering to complete)
-  useEffect(() => {
-    if (neighborhoodNodes && neighborhoodNodes.length > 0) {
-      // Longer delay to ensure the filtered data has been updated and rendering is complete
-      const timer = setTimeout(() => {
-        simplifyGraph();
-      }, 1000); // Increased delay to 1 second
-      return () => {
-        clearTimeout(timer);
-      };
-    } else {
-    }
-  }, [neighborhoodNodes, simplifyGraph]);
+      // Save graph state immediately so reopen restores exact positions & filteredOut
+      const liveNodePositions = Object.fromEntries(nodes.map((n) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }]));
+      const fullSnapshot = { ...positions, ...liveNodePositions } as Record<string, { x: number; y: number }>;
+      try { saveGraphStateImmediate(fullSnapshot, hiddenNodes, data, filteredData); } catch { }
+      // Also store a version snapshot for undo (debounced via effect cadence)
+      try { 
+        console.log('push history'); 
+        await pushHistoryAndRefresh(makeSnapshot()); 
+      } catch { }
+    })();
+  }, [filters, hiddenNodes, positions, filteredData, neighborhoodNodes, selectedNeighborhoodNodes, makeSnapshot, pushHistoryAndRefresh]);
 
-  // Persist filters and latest node state whenever filters/hidden/positions/filteredData change
-  useEffect(() => {
-    try {
-      localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(filters));
-    } catch { }
-
-    // Save graph state immediately so reopen restores exact positions & filteredOut
-    const liveNodePositions = Object.fromEntries(nodes.map((n) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }]));
-    const fullSnapshot = { ...positions, ...liveNodePositions } as Record<string, { x: number; y: number }>;
-    try { saveGraphStateImmediate(fullSnapshot, hiddenNodes, data, filteredData); } catch { }
-    // Also store a version snapshot for undo (debounced via effect cadence)
-    try { pushHistory(fileKey ?? null, makeSnapshot()); refreshCanUndo(); } catch { }
-  }, [filters, hiddenNodes, positions, filteredData]);
-
-  // 🔹 Filter options (dependent on other selections and neighborhood) - optimized
+  // 🔹 Filter options (dependent on other selections and neighborhood)
   const filterOptions = useMemo(() => {
     const opts: { [key: string]: string[] } = {};
-
-    // Pre-calculate neighborhood filter once if needed
-    let neighborhoodFilteredRows = data;
-    if (neighborhoodNodes && neighborhoodNodes.length > 0) {
-      const allAncestors = new Set<string>();
-      const allDescendants = new Set<string>();
-
-      neighborhoodNodes.forEach(nodeId => {
-        getAllAncestors(nodeId).forEach(ancestor => allAncestors.add(ancestor));
-        getAllDescendants(nodeId).forEach(descendant => allDescendants.add(descendant));
-        allAncestors.add(nodeId);
-        allDescendants.add(nodeId);
-      });
-
-      neighborhoodFilteredRows = data.filter((row) => {
-        const parentInChain = allAncestors.has(row.parentTableName) || allDescendants.has(row.parentTableName);
-        const childInChain = allAncestors.has(row.childTableName) || allDescendants.has(row.childTableName);
-        return parentInChain && childInChain;
-      });
-    }
 
     columns.forEach((col) => {
       const values = new Set<string>();
 
       // For each row, check whether it passes current filters except for this column
-      neighborhoodFilteredRows.forEach((row) => {
+      data.forEach((row) => {
+        // neighborhood filter: if set, only consider rows where both parent and child are in the neighborhood
+        if (neighborhoodNodes && neighborhoodNodes.length > 0) {
+          const allowedNodes = new Set(neighborhoodNodes);
+          
+          // Skip rows that don't connect nodes in the neighborhood
+          if (!(allowedNodes.has(row.parentTableName) && allowedNodes.has(row.childTableName))) {
+            return;
+          }
+        }
+
         const passesOtherFilters = Object.entries(filters).every(([fCol, val]) => {
           if (fCol === col) return true; // ignore current col
           if (!val || (Array.isArray(val) && val.length === 0)) return true;
@@ -587,7 +550,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
   }, [data, filters]);
 
   // 🔹 Hide node function
-  const hideNode = (nodeId: string) => {
+  const hideNode = async (nodeId: string) => {
     // Toggle only this node's hidden flag. Do not hide parents/children.
     const positionsSnapshotBeforeHide = {
       ...positions,
@@ -614,13 +577,12 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
         ...makeSnapshot(),
         hidden: Array.from(newHidden)
       };
-      pushHistory(fileKey ?? null, snap);
-      refreshCanUndo();
+      await pushHistoryAndRefresh(snap);
     } catch { }
   };
 
   // 🔹 Unhide node function
-  const unhideNode = (nodeId: string) => {
+  const unhideNode = async (nodeId: string) => {
     // Only unhide the single node; do not unhide parents/children automatically
     const newHidden = new Set(hiddenNodes);
     newHidden.delete(nodeId);
@@ -645,10 +607,49 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
         ...makeSnapshot(),
         hidden: Array.from(newHidden)
       };
-      pushHistory(fileKey ?? null, snap);
-      refreshCanUndo();
+      await pushHistoryAndRefresh(snap);
     } catch { }
   };
+
+  // 🔹 Ctrl+click to hide node
+  const onNodeClick = useCallback(async (event: React.MouseEvent, node: any) => {
+    if (event.ctrlKey || event.metaKey) { // Support both Ctrl (Windows/Linux) and Cmd (Mac)
+      event.preventDefault();
+      event.stopPropagation();
+      if (!hiddenNodes.has(node.id)) {
+        await hideNode(node.id);
+      }
+    }
+  }, [hiddenNodes, hideNode]);
+
+  // 🔹 Right-click to apply neighborhood filter
+  const onNodeContextMenu = useCallback(async (event: React.MouseEvent, node: any) => {
+    event.preventDefault();
+    
+    // Get immediate family from localStorage
+    const { parents, children } = getImmediateFamily(node.id);
+    
+    // Create neighborhood filter: selected node + immediate parents + immediate children
+    const neighborhoodFilter = [node.id, ...parents, ...children].filter(Boolean);
+    
+    // Set both the user selection (just the clicked node) and the complete neighborhood
+    setSelectedNeighborhoodNodes([node.id]);
+    setNeighborhoodNodes(neighborhoodFilter);
+    
+    // Fit view and simplify graph after neighborhood filter
+    setTimeout(async () => {
+      fitView({ duration: 800 });
+      // Wait for fitView animation to complete, then simplify
+      setTimeout(async () => {
+        await simplifyGraph();
+      }, 900); // Wait for fitView duration + buffer
+    }, 200); // Give time for state updates
+    
+    // Push to history
+    try {
+      await pushHistoryAndRefresh(makeSnapshot());
+    } catch { }
+  }, [getImmediateFamily, setNeighborhoodNodes, fitView, pushHistoryAndRefresh, makeSnapshot]);
 
   // 🔹 Build nodes & edges
   useEffect(() => {
@@ -664,6 +665,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
 
     // helper to pick handle based on layout axis for straighter orthogonal edges
     const getClosestHandle = (nodePos: { x: number; y: number, id: string } | undefined, otherCenter: { x: number; y: number }) => {
+      // console.log(`${nodePos?.id}`)
       const vertical = layoutDirection === 'TB' || layoutDirection === 'BT';
       if (!nodePos) return vertical ? 'top' : 'left';
       const center = { x: nodePos.x + nodeWidth / 2, y: nodePos.y / 2 };
@@ -749,7 +751,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
         } : { x: 0, y: 0 };
         const childCenter = childPos ? {
           x: childPos.x + nodeWidth / 2,
-          y: childPos.y / 2
+          y: childPos.y  / 2
         } : { x: 0, y: 0 };
 
         const sourceHandle = getClosestHandle({ ...parentPos, id: parent }, childCenter);
@@ -873,14 +875,15 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       // if drag ended, push to history
       const dragEnded = changes.some((c: any) => c.type === 'position' && (c.dragging === false || typeof c.dragging === 'undefined'));
       if (dragEnded) {
-        try {
-          const snap: GraphHistoryEntry = {
-            ...makeSnapshot(),
-            positions: { ...snapshot }
-          };
-          pushHistory(fileKey ?? null, snap);
-          refreshCanUndo();
-        } catch { }
+        (async () => {
+          try {
+            const snap: GraphHistoryEntry = {
+              ...makeSnapshot(),
+              positions: { ...snapshot }
+            };
+            await pushHistoryAndRefresh(snap);
+          } catch { }
+        })();
       }
     }
   }, [onNodesChange, debouncedSaveGraphState, nodes, hiddenNodes, data, filteredData]);
@@ -897,7 +900,11 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
       ...n,
       style: {
         ...n.style,
-        border: hoveredNode === n.id ? "2px solid #1976d2" : "1px solid #90caf9",
+        border: highlightedNode === n.id 
+          ? "3px solid #ff6b35" 
+          : hoveredNode === n.id 
+            ? "2px solid #1976d2" 
+            : "1px solid #90caf9",
         padding: 8,
         // color by table type (inspect details)
         background: (() => {
@@ -908,7 +915,11 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
           return color || '#e3f2fd';
         })(),
         color: "#0d47a1",
-        boxShadow: (hoveredNode === n.id || (hoveredEdge && edges.find((ee: any) => ee.id === hoveredEdge && (ee.source === n.id || ee.target === n.id)))) ? "0 0 12px #ff9800" : "0 1px 4px #90caf9",
+        boxShadow: highlightedNode === n.id 
+          ? "0 0 20px #ff6b35, 0 0 40px rgba(255, 107, 53, 0.3)" 
+          : (hoveredNode === n.id || (hoveredEdge && edges.find((ee: any) => ee.id === hoveredEdge && (ee.source === n.id || ee.target === n.id))))
+            ? "0 0 12px #ff9800" 
+            : "0 1px 4px #90caf9",
       },
       data: {
         ...n.data,
@@ -922,9 +933,13 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
                     size="small"
                     variant="outlined"
                     color={hiddenNodes.has(n.id) ? "success" : "error"}
-                    onClick={() =>
-                      hiddenNodes.has(n.id) ? unhideNode(n.id) : hideNode(n.id)
-                    }
+                    onClick={async () => {
+                      if (hiddenNodes.has(n.id)) {
+                        await unhideNode(n.id);
+                      } else {
+                        await hideNode(n.id);
+                      }
+                    }}
                     sx={{ fontWeight: "bold", borderRadius: 2 }}
                   >
                     {hiddenNodes.has(n.id) ? "Unhide" : "Hide"}
@@ -934,7 +949,6 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
             }
             arrow
             placement="right"
-            PopperProps={{ container: tooltipContainerRef.current || undefined, }}
             componentsProps={{
               tooltip: {
                 sx: {
@@ -973,7 +987,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
         ),
       },
     }))
-  ), [nodes, hoveredNode, hiddenNodes, hoveredEdge, edges, tooltipContainerRef]);
+  ), [nodes, hoveredNode, hiddenNodes, hoveredEdge, edges, highlightedNode]);
 
   const visualEdges = useMemo(() => (
     edges.map((e) => ({
@@ -988,12 +1002,440 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
   // Memoize nodeTypes to avoid recreating the object on every render (prevents React Flow warnings)
   const nodeTypesMemo = useMemo(() => ({ fourHandle: FourHandleNode }), []);
 
+  // Simplify graph using Dagre layout
+  const simplifyGraph = useCallback(async () => {
+    try {
+      // Use a small delay to ensure filteredData is updated
+      await new Promise(resolve => setTimeout(resolve, 50));
+      
+      // Get visible nodes and edges based on current filtered data
+      const visibleNodes = nodes.filter(n => !hiddenNodes.has(n.id));
+      const visibleEdges = edges.filter(e => !hiddenNodes.has(e.source) && !hiddenNodes.has(e.target));
+      
+      if (visibleNodes.length === 0) return;
+      
+      console.log('Simplifying graph with', visibleNodes.length, 'nodes and', visibleEdges.length, 'edges');
+      
+      const layouted = await getLayoutedElements(visibleNodes, visibleEdges, layoutDirection);
+      
+      const newPositions = { ...positions };
+      layouted.nodes.forEach((n: any) => {
+        if (n.position && typeof n.position.x === 'number' && typeof n.position.y === 'number') {
+          newPositions[n.id] = { 
+            x: Number(n.position.x.toFixed(5)), 
+            y: Number(n.position.y.toFixed(5)) 
+          };
+        }
+      });
+      
+      // Update positions state
+      setPositions(newPositions);
+      
+      // Update nodes with new positions
+      setNodes(prev => prev.map(node => ({
+        ...node,
+        position: newPositions[node.id] || node.position
+      })));
+      
+      // Save to localStorage
+      const layoutPos = Object.fromEntries(
+        layouted.nodes.map((n: any) => [
+          n.id, 
+          { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }
+        ])
+      );
+      const fullSnapshot = { ...positions, ...layoutPos } as Record<string, { x: number; y: number }>;
+      debouncedSaveGraphState(fullSnapshot, hiddenNodes, data, filteredData);
+      
+      // Add to history
+      try {
+        await pushHistoryAndRefresh({
+          positions: newPositions,
+          hidden: Array.from(hiddenNodes),
+          filters,
+          layoutDirection,
+          neighborhoodNodes: [...neighborhoodNodes],
+          selectedNeighborhoodNodes: [...selectedNeighborhoodNodes],
+          timestamp: Date.now()
+        });
+      } catch (error) {
+        console.warn('Failed to save to history:', error);
+      }
+      
+      console.log('Graph simplified successfully');
+    } catch (error) {
+      console.warn('Failed to simplify graph:', error);
+    }
+  }, [nodes, edges, hiddenNodes, positions, layoutDirection, data, filteredData, filters, neighborhoodNodes, selectedNeighborhoodNodes, debouncedSaveGraphState, pushHistoryAndRefresh, setNodes]);
+
+  // Handle node selection from search
+  const handleNodeSearch = useCallback((nodeId: string) => {
+    setHighlightedNode(nodeId);
+    // Clear highlight after 3 seconds
+    setTimeout(() => {
+      setHighlightedNode(null);
+    }, 3000);
+  }, []);
+
+  // Handle reset filters
+  const handleResetFilters = useCallback(async () => {
+    const resetFilters = Object.fromEntries(Object.keys(filters).map(key => [key, []])); 
+    setFilters(resetFilters); 
+    setNeighborhoodNodes([]);
+    setSelectedNeighborhoodNodes([]);
+    try { localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(resetFilters)); } catch { }
+    setTimeout(async () => {
+      fitView({ duration: 800 });
+      // Wait for fitView animation to complete, then simplify
+      setTimeout(async () => {
+        await simplifyGraph();
+      }, 900); // Wait for fitView duration + buffer
+    }, 200); // Give time for state updates
+  }, [filters, getStorageKey, setFilters, setNeighborhoodNodes, setSelectedNeighborhoodNodes, fitView, simplifyGraph]);
+
+  // Undo handler
+  const handleUndo = useCallback(async () => {
+    try {
+      const entry = await undoHistory(fileKey ?? null);
+      if (!entry) return;
+      setFilters(entry.filters || {});
+      setLayoutDirection(entry.layoutDirection || 'TB');
+      setHiddenNodes(new Set(entry.hidden || []));
+      setPositions(entry.positions || {});
+      setNeighborhoodNodes(entry.neighborhoodNodes || []);
+      setSelectedNeighborhoodNodes(entry.selectedNeighborhoodNodes || []);
+      setNodes((prev) => prev.map((pn) => (
+        entry.positions && entry.positions[pn.id]
+          ? { ...pn, position: entry.positions[pn.id] }
+          : pn
+      )));
+      // Save the restored state to localStorage
+      try {
+        localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(entry.filters || {}));
+        localStorage.setItem(getStorageKey('graph_layout_direction'), entry.layoutDirection || 'TB');
+      } catch { }
+    } finally {
+      refreshCanUndo();
+    }
+  }, [fileKey, getStorageKey, setFilters, setLayoutDirection, setHiddenNodes, setPositions, setNeighborhoodNodes, setSelectedNeighborhoodNodes, setNodes, refreshCanUndo]);
+
+  // Redo handler
+  const handleRedo = useCallback(async () => {
+    try {
+      const entry = await redoHistory(fileKey ?? null);
+      if (!entry) return;
+      setFilters(entry.filters || {});
+      setLayoutDirection(entry.layoutDirection || 'TB');
+      setHiddenNodes(new Set(entry.hidden || []));
+      setPositions(entry.positions || {});
+      setNeighborhoodNodes(entry.neighborhoodNodes || []);
+      setSelectedNeighborhoodNodes(entry.selectedNeighborhoodNodes || []);
+      setNodes((prev) => prev.map((pn) => (
+        entry.positions && entry.positions[pn.id]
+          ? { ...pn, position: entry.positions[pn.id] }
+          : pn
+      )));
+      // Save the restored state to localStorage
+      try {
+        localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(entry.filters || {}));
+        localStorage.setItem(getStorageKey('graph_layout_direction'), entry.layoutDirection || 'TB');
+      } catch { }
+    } finally {
+      refreshCanUndo();
+    }
+  }, [fileKey, getStorageKey, setFilters, setLayoutDirection, setHiddenNodes, setPositions, setNeighborhoodNodes, setSelectedNeighborhoodNodes, setNodes, refreshCanUndo]);
+
   return (
-    <div style={{ width: '100vw', background: PEPSI_LIGHT }}>
+    <>
+      {/* Fullscreen Graph Mode */}
+      {isFullscreen && (
+        <Box sx={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          backgroundColor: '#fff',
+          zIndex: 1300,
+          display: 'flex',
+          flexDirection: 'column',
+          animation: 'fadeInScale 0.3s ease-out',
+          '@keyframes fadeInScale': {
+            '0%': {
+              opacity: 0,
+              transform: 'scale(0.95)',
+            },
+            '100%': {
+              opacity: 1,
+              transform: 'scale(1)',
+            },
+          },
+        }}>
+          {/* Fullscreen Controls */}
+          <Box sx={{
+            position: 'absolute',
+            top: 16,
+            right: 16,
+            zIndex: 1400,
+            display: 'flex',
+            gap: 1,
+            flexDirection: 'row',
+            alignItems: 'center',
+          }}>
+            {/* Undo/Redo/PNG/Close buttons */}
+            <button
+              onClick={handleUndo}
+              disabled={!canUndo}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: canUndo ? '#1976d2' : '#ccc',
+                color: '#fff',
+                border: 'none',
+                padding: '8px',
+                borderRadius: 6,
+                cursor: canUndo ? 'pointer' : 'not-allowed',
+                fontWeight: 600,
+                boxShadow: '0 2px 4px rgba(0,0,0,0.15)',
+                transition: 'all 0.2s ease-in-out',
+                minWidth: '36px',
+                height: '36px',
+              }}
+              title="Undo"
+            >
+              <UndoOutlined fontSize="small" />
+            </button>
+            
+            <button
+              onClick={handleRedo}
+              disabled={!canRedo}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: canRedo ? '#1976d2' : '#ccc',
+                color: '#fff',
+                border: 'none',
+                padding: '8px',
+                borderRadius: 6,
+                cursor: canRedo ? 'pointer' : 'not-allowed',
+                fontWeight: 600,
+                boxShadow: '0 2px 4px rgba(0,0,0,0.15)',
+                transition: 'all 0.2s ease-in-out',
+                minWidth: '36px',
+                height: '36px',
+              }}
+              title="Redo"
+            >
+              <RedoOutlined fontSize="small" />
+            </button>
+
+            <button
+              onClick={async () => {
+                const viewportEl = document.querySelector('.react-flow__viewport') as HTMLElement | null;
+                if (!viewportEl) return;
+                try {
+                  const { toPng } = await import('html-to-image');
+                  const dataUrl = await toPng(viewportEl, {
+                    backgroundColor: '#ffffff',
+                    cacheBust: true,
+                    pixelRatio: 2,
+                    filter: (node) => {
+                      return !(node.nodeType === 1 && (node as HTMLElement).style.backgroundColor === 'black');
+                    },
+                    style: {
+                      backgroundColor: '#ffffff !important',
+                    }
+                  });
+                  const a = document.createElement('a');
+                  a.setAttribute('download', (fileKey ? `graph-${fileKey}` : 'graph') + '.png');
+                  a.setAttribute('href', dataUrl);
+                  a.click();
+                } catch (e) {
+                  console.warn('Image export failed', e);
+                }
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                background: '#1976d2',
+                color: '#fff',
+                border: 'none',
+                padding: '6px 12px',
+                borderRadius: 6,
+                cursor: 'pointer',
+                fontWeight: 600,
+                boxShadow: '0 2px 4px rgba(0,0,0,0.15)',
+                transition: 'all 0.2s ease-in-out',
+              }}
+              title="Download PNG snapshot"
+            >
+              <DownloadOutlinedIcon fontSize="small" /> PNG
+            </button>
+
+            {/* Close button */}
+            <Button
+              variant="contained"
+              onClick={() => {
+                setIsAnimating(true);
+                setTimeout(() => {
+                  setIsFullscreen(false);
+                  // Increment refresh key to force complete re-mount of normal ReactFlow
+                  setRefreshKey(prev => prev + 1);
+                  // Force complete re-initialization of the normal ReactFlow
+                  setTimeout(() => {
+                    try {
+                      // First, update nodes to force a re-render
+                      setNodes(prev => [...prev]);
+                      setEdges(prev => [...prev]);
+                      // Then fit view
+                      setTimeout(() => {
+                        try {
+                          fitView({ duration: 500 });
+                        } catch (error) {
+                          console.warn('fitView failed, trying again:', error);
+                          // Retry once more in case the normal ReactFlow wasn't ready
+                          setTimeout(() => {
+                          try {
+                            fitView({ duration: 500 });
+                          } catch (retryError) {
+                            console.warn('fitView retry failed:', retryError);
+                          }
+                        }, 300);
+                      }
+                    }, 100);
+                  } catch (error) {
+                    console.warn('Re-render failed:', error);
+                  }
+                  setIsAnimating(false);
+                }, 50);
+                }, 150);
+              }}
+              sx={{
+                minWidth: 'auto',
+                width: 40,
+                height: 40,
+                backgroundColor: '#d32f2f',
+                '&:hover': { backgroundColor: '#b71c1c' },
+              }}
+            >
+              <CloseIcon />
+            </Button>
+          </Box>
+          
+          {/* Search Node below top controls */}
+          <Box sx={{
+            position: 'absolute',
+            top: 70,
+            right: 16,
+            zIndex: 1400,
+          }}>
+            <SearchNode 
+              nodes={nodes}
+              hiddenNodes={hiddenNodes}
+              onNodeSelect={handleNodeSearch}
+            />
+          </Box>
+          
+          {/* Controls panel moved to left side for fullscreen */}
+          <Box sx={{ 
+            position: 'absolute',
+            top: 16,
+            left: 16,
+            zIndex: 1400,
+            display: 'flex', 
+            gap: 1, 
+            flexDirection: 'column',
+            backgroundColor: 'rgba(255, 255, 255, 0.95)',
+            padding: 2,
+            borderRadius: 2,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+            backdropFilter: 'blur(8px)',
+            border: '1px solid rgba(255, 255, 255, 0.2)'
+          }}>
+            {/* Neighborhood Dropdown */}
+            <Box sx={{ minWidth: 260 }}>
+              <FilterSelect
+                title="Neighborhood"
+                options={neighborhoodOptions}
+                value={selectedNeighborhoodNodes}
+                onChange={(vals) => {
+                  setSelectedNeighborhoodNodes(vals);
+                  
+                  if (!vals || vals.length === 0) {
+                    setNeighborhoodNodes([]);
+                  } else {
+                    // Build complete neighborhood for all selected nodes
+                    const completeNeighborhood = new Set<string>();
+                    
+                    vals.forEach(nodeId => {
+                      // Add the selected node itself
+                      completeNeighborhood.add(nodeId);
+                      
+                      // Get immediate family for each selected node
+                      const { parents, children } = getImmediateFamily(nodeId);
+                      
+                      // Add immediate parents and children
+                      parents.forEach(parent => completeNeighborhood.add(parent));
+                      children.forEach(child => completeNeighborhood.add(child));
+                    });
+                    
+                    setNeighborhoodNodes(Array.from(completeNeighborhood));
+                  }
+                  
+                  setTimeout(async () => {
+                    fitView({ duration: 800 });
+                    // Wait for fitView animation to complete, then simplify
+                    setTimeout(async () => {
+                      await simplifyGraph();
+                    }, 900); // Wait for fitView duration + buffer
+                  }, 200); // Give time for state updates
+                }}
+              />
+            </Box>
+          </Box>
+          
+          {/* Fullscreen ReactFlow */}
+          <ReactFlow
+            key="fullscreen-reactflow"
+            nodes={visualNodes}
+            edges={visualEdges}
+            onNodesChange={handleNodesChange}
+            onEdgesChange={onEdgesChange}
+            onNodeMouseEnter={onNodeMouseEnter}
+            onNodeMouseLeave={onNodeMouseLeave}
+            onNodeClick={onNodeClick}
+            onNodeContextMenu={onNodeContextMenu}
+            onEdgeMouseEnter={onEdgeMouseEnter}
+            onEdgeMouseLeave={onEdgeMouseLeave}
+            nodeTypes={nodeTypesMemo}
+            minZoom={0.001}
+            maxZoom={5}
+            fitView
+            style={{ width: '100%', height: '100%' }}
+          >
+            <Background color="#e3f2fd" />
+            <AnimatedControls 
+              style={{ background: "#e3f2fd", borderRadius: 8 }} 
+              onResetFilters={handleResetFilters}
+            />
+            <MiniMap
+              nodeColor={(n) => (hiddenNodes.has(n.id) ? "#bdbdbd" : "#1976d2")}
+              nodeStrokeColor={(n) => (hoveredNode === n.id ? "#ff9800" : "#1976d2")}
+              maskColor="rgba(33,150,243,0.1)"
+            />
+          </ReactFlow>
+        </Box>
+      )}
+      
+      {/* Normal Layout */}
+      <div style={{ width: '100vw', background: PEPSI_LIGHT }}>
 
       {/* Header ribbon (larger) */}
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 3, py: 2, background: '#fff', boxShadow: 2 }}>
-        <Typography variant="h4" sx={{ fontWeight: 800, color: PEPSI_BLUE }}>Data Lineage Visualization</Typography>
+        <Typography variant="h4" sx={{ fontWeight: 800, color: PEPSI_BLUE }}>Lineage Visualization</Typography>
         <Box>
           <img src={logo} alt="logo" style={{ height: 56 }} />
         </Box>
@@ -1016,6 +1458,16 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
                     const liveNodePositions = Object.fromEntries(nodes.map((n) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }]));
                     const fullSnapshot = { ...positions, ...liveNodePositions } as Record<string, { x: number; y: number }>;
                     try { saveGraphStateImmediate(fullSnapshot, hiddenNodes, data, filteredData); } catch { }
+                    
+                    // Fit view and simplify graph after filter change
+                    setTimeout(async () => {
+                      fitView({ duration: 800 });
+                      // Wait for fitView animation to complete, then simplify
+                      setTimeout(async () => {
+                        await simplifyGraph();
+                      }, 900); // Wait for fitView duration + buffer
+                    }, 200); // Give time for state updates
+                    
                     return newFilters;
                   });
                 }}
@@ -1033,13 +1485,45 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
               <FilterSelect
                 title="Neighborhood"
                 options={neighborhoodOptions}
-                value={neighborhoodNodes}
-                onChange={(vals) => setNeighborhoodNodes(vals)}
+                value={selectedNeighborhoodNodes}
+                onChange={(vals) => {
+                  setSelectedNeighborhoodNodes(vals);
+                  
+                  if (!vals || vals.length === 0) {
+                    setNeighborhoodNodes([]);
+                  } else {
+                    // Build complete neighborhood for all selected nodes
+                    const completeNeighborhood = new Set<string>();
+                    
+                    vals.forEach(nodeId => {
+                      // Add the selected node itself
+                      completeNeighborhood.add(nodeId);
+                      
+                      // Get immediate family for each selected node
+                      const { parents, children } = getImmediateFamily(nodeId);
+                      
+                      // Add immediate parents and children
+                      parents.forEach(parent => completeNeighborhood.add(parent));
+                      children.forEach(child => completeNeighborhood.add(child));
+                    });
+                    
+                    setNeighborhoodNodes(Array.from(completeNeighborhood));
+                  }
+                  
+                  // Fit view and simplify graph after neighborhood change
+                  setTimeout(async () => {
+                    fitView({ duration: 800 });
+                    // Wait for fitView animation to complete, then simplify
+                    setTimeout(async () => {
+                      await simplifyGraph();
+                    }, 900); // Wait for fitView duration + buffer
+                  }, 200); // Give time for state updates
+                }}
               />
             </Box>
-            <Typography variant="body2" sx={{ color: '#666' }}>{neighborhoodNodes && neighborhoodNodes.length > 0 ? `Neighborhood: ${neighborhoodNodes.join(', ')}` : 'Showing all nodes'}</Typography>
+            <Typography variant="body2" sx={{ color: '#666' }}>{selectedNeighborhoodNodes && selectedNeighborhoodNodes.length > 0 ? `Neighborhood: ${selectedNeighborhoodNodes.join(', ')}` : 'Showing all nodes'}</Typography>
           </Box>
-          <Button variant="contained" onClick={() => { const resetFilters = Object.fromEntries(Object.keys(filters).map(key => [key, []])); setFilters(resetFilters); setNeighborhoodNodes([]); try { localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(resetFilters)); } catch { } }} sx={{ fontWeight: 'bold', backgroundColor: PEPSI_BLUE, '&:hover': { backgroundColor: '#00356a' } }}>
+          <Button variant="contained" onClick={handleResetFilters} sx={{ fontWeight: 'bold', backgroundColor: PEPSI_BLUE, '&:hover': { backgroundColor: '#00356a' } }}>
             <SettingsBackupRestoreOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Reset All Filters
           </Button>
         </Box>
@@ -1058,7 +1542,12 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
                 placeholderAllText="All"
               />
             </Box>
-            <Button variant="contained" color="success" disabled={selectedHidden.length === 0} onClick={() => { selectedHidden.forEach((id) => unhideNode(id)); setSelectedHidden([]); }} sx={{ fontWeight: 'bold' }}>Unhide Selected</Button>
+            <Button variant="contained" color="success" disabled={selectedHidden.length === 0} onClick={async () => { 
+              for (const id of selectedHidden) {
+                await unhideNode(id);
+              }
+              setSelectedHidden([]); 
+            }} sx={{ fontWeight: 'bold' }}>Unhide Selected</Button>
           </Box>
           <Button variant="contained" onClick={resetHiddenNodes} sx={{ fontWeight: 'bold', backgroundColor: '#4CAF50', '&:hover': { backgroundColor: '#388e3c' } }}>
             <VisibilityOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Reset Hidden Nodes
@@ -1156,11 +1645,18 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
                   setLayoutDirection(entry.layoutDirection || 'TB');
                   setHiddenNodes(new Set(entry.hidden || []));
                   setPositions(entry.positions || {});
+                  setNeighborhoodNodes(entry.neighborhoodNodes || []);
+                  setSelectedNeighborhoodNodes(entry.selectedNeighborhoodNodes || []);
                   setNodes((prev) => prev.map((pn) => (
                     entry.positions && entry.positions[pn.id]
                       ? { ...pn, position: entry.positions[pn.id] }
                       : pn
                   )));
+                  // Save the restored state to localStorage
+                  try {
+                    localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(entry.filters || {}));
+                    localStorage.setItem(getStorageKey('graph_layout_direction'), entry.layoutDirection || 'TB');
+                  } catch { }
                 } finally {
                   refreshCanUndo();
                 }
@@ -1173,11 +1669,18 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
                   setLayoutDirection(entry.layoutDirection || 'TB');
                   setHiddenNodes(new Set(entry.hidden || []));
                   setPositions(entry.positions || {});
+                  setNeighborhoodNodes(entry.neighborhoodNodes || []);
+                  setSelectedNeighborhoodNodes(entry.selectedNeighborhoodNodes || []);
                   setNodes((prev) => prev.map((pn) => (
                     entry.positions && entry.positions[pn.id]
                       ? { ...pn, position: entry.positions[pn.id] }
                       : pn
                   )));
+                  // Save the restored state to localStorage
+                  try {
+                    localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(entry.filters || {}));
+                    localStorage.setItem(getStorageKey('graph_layout_direction'), entry.layoutDirection || 'TB');
+                  } catch { }
                 } finally {
                   refreshCanUndo();
                 }
@@ -1204,7 +1707,7 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
                   }));
                   const fullSnapshot = Object.fromEntries(layouted.nodes.map((n: any) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }]));
                   try { saveGraphStateImmediate({ ...positions, ...fullSnapshot }, hiddenNodes, data, filteredData); } catch { }
-                  try { pushHistory(fileKey ?? null, { positions: newPositions, hidden: Array.from(hiddenNodes), filters, layoutDirection, timestamp: Date.now() }); refreshCanUndo(); } catch { }
+                  try { await pushHistoryAndRefresh({ positions: newPositions, hidden: Array.from(hiddenNodes), filters, layoutDirection, neighborhoodNodes: [...neighborhoodNodes], timestamp: Date.now() }); } catch { }
                 } catch { }
               }}
             />
@@ -1229,12 +1732,14 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
         position: 'relative'
       }}>
         <ReactFlow
+          key={`normal-reactflow-${refreshKey}`}
           nodes={visualNodes}
           edges={visualEdges}
           onNodesChange={handleNodesChange}
           onEdgesChange={onEdgesChange}
           onNodeMouseEnter={onNodeMouseEnter}
           onNodeMouseLeave={onNodeMouseLeave}
+          onNodeClick={onNodeClick}
           onNodeContextMenu={onNodeContextMenu}
           onEdgeMouseEnter={onEdgeMouseEnter}
           onEdgeMouseLeave={onEdgeMouseLeave}
@@ -1244,43 +1749,37 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
           fitView
         >
           <Background color="#e3f2fd" />
-          <Controls style={{ background: "#e3f2fd", borderRadius: 8 }} />
+          <AnimatedControls 
+            style={{ background: "#e3f2fd", borderRadius: 8 }} 
+            onResetFilters={handleResetFilters}
+          />
           <MiniMap
             nodeColor={(n) => (hiddenNodes.has(n.id) ? "#bdbdbd" : "#1976d2")}
             nodeStrokeColor={(n) => (hoveredNode === n.id ? "#ff9800" : "#1976d2")}
             maskColor="rgba(33,150,243,0.1)"
           />
-          <DownloadButton fileName={(fileKey ? `graph-${fileKey}` : 'graph') + '.png'} />
+          <DownloadButton 
+            fileName={(fileKey ? `graph-${fileKey}` : 'graph') + '.png'} 
+            onExpandClick={() => {
+              setIsAnimating(true);
+              setTimeout(() => {
+                setIsFullscreen(true);
+                setIsAnimating(false);
+              }, 150);
+            }}
+            canUndo={canUndo}
+            canRedo={canRedo}
+            onUndo={handleUndo}
+            onRedo={handleRedo}
+          />
+          <Panel position="top-right" style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '60px' }}>
+            <SearchNode 
+              nodes={nodes}
+              hiddenNodes={hiddenNodes}
+              onNodeSelect={handleNodeSearch}
+            />
+          </Panel>
         </ReactFlow>
-        <MaximizeButton>
-          {() => (
-            <Box
-              ref={tooltipContainerRef}
-              sx={{ width: '100%', height: '100%', backgroundColor: 'white', display: 'flex' }}
-            >
-              <ReactFlow
-                nodes={visualNodes}      // visualNodes depends on hiddenNodes
-                edges={visualEdges}
-                onNodesChange={handleNodesChange}
-                onEdgesChange={onEdgesChange}
-                onNodeContextMenu={onNodeContextMenu}
-                nodeTypes={nodeTypesMemo}
-                minZoom={0.001}
-                maxZoom={5}
-                fitView
-              >
-                <Background color="#e3f2fd" />
-                <Controls style={{ background: "#e3f2fd", borderRadius: 8 }} />
-                <MiniMap
-                  nodeColor={(n) => (hiddenNodes.has(n.id) ? "#bdbdbd" : "#1976d2")}
-                  nodeStrokeColor={(n) => (hoveredNode === n.id ? "#ff9800" : "#1976d2")}
-                  maskColor="rgba(33,150,243,0.1)"
-                />
-              </ReactFlow>
-            </Box>
-          )}
-        </MaximizeButton>
-
       </Box>
 
       {/* 🔹 Visible Nodes Table */}
@@ -1355,8 +1854,15 @@ const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | nu
           </Box>
         </Box>
       </Box>
-    </div>
+      </div>
+    </>
   );
 };
+
+const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | null }) => (
+  <ReactFlowProvider>
+    <GraphInner data={data} fileKey={fileKey} />
+  </ReactFlowProvider>
+);
 
 export default Graph;

@@ -66,6 +66,7 @@ button:focus-visible {
     background-color: #f9f9f9;
   }
 }
+
 .react-flow__edge .react-flow__edge-text {
   background: transparent !important;
 }
