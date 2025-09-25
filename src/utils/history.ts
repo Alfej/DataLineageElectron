@@ -87,9 +87,11 @@ export async function pushHistory(
       return `${k}:${Math.round(p.x)}:${Math.round(p.y)}`; // coarse rounding for stability
     }).join('|');
     const hiddenSize = e.hidden.length;
-    const filterSig = Object.keys(e.filters).sort().map(k => `${k}:${(e.filters[k]||[]).length}`).join(',');
+    // Include actual filter values, not just counts, to detect filter content changes
+    const filterSig = Object.keys(e.filters).sort().map(k => `${k}:${(e.filters[k]||[]).sort().join(';')}`).join(',');
     const neighborhoodSig = (e.neighborhoodNodes || []).sort().join(',');
-    return `${posKeys.length}|${hiddenSize}|${filterSig}|${e.layoutDirection}|${neighborhoodSig}|${head}`;
+    const selectedNeighborhoodSig = (e.selectedNeighborhoodNodes || []).sort().join(';');
+    return `${posKeys.length}|${hiddenSize}|${filterSig}|${e.layoutDirection}|${neighborhoodSig}|${selectedNeighborhoodSig}|${e.currentNeighborhoodFilterNodeId || ''}|${head}`;
   };
   entry._sig = buildSig(entry);
 
@@ -99,7 +101,7 @@ export async function pushHistory(
     return;
   }
 
-  // Optionally skip if only tiny jitter in positions (sum delta < 2 px overall)
+  // Optionally skip if only tiny jitter in positions (sum delta < 2 px overall) AND no significant state changes
   if (last) {
     let delta = 0;
     const keys = new Set([...Object.keys(entry.positions), ...Object.keys(last.positions)]);
@@ -108,10 +110,17 @@ export async function pushHistory(
       const b = last.positions[k];
       if (a && b) delta += Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
     }
+    
+    // Check if filters have changed
+    const filtersChanged = JSON.stringify(entry.filters) !== JSON.stringify(last.filters);
+    const selectedNeighborhoodChanged = JSON.stringify((entry.selectedNeighborhoodNodes || []).sort()) !== JSON.stringify((last.selectedNeighborhoodNodes || []).sort());
+    const currentNeighborhoodFilterChanged = entry.currentNeighborhoodFilterNodeId !== last.currentNeighborhoodFilterNodeId;
+    
     if (delta < 2 && entry.layoutDirection === last.layoutDirection && 
         entry.hidden.length === last.hidden.length &&
-        JSON.stringify((entry.neighborhoodNodes || []).sort()) === JSON.stringify((last.neighborhoodNodes || []).sort())) {
-      return; // skip near-no-op move
+        JSON.stringify((entry.neighborhoodNodes || []).sort()) === JSON.stringify((last.neighborhoodNodes || []).sort()) &&
+        !filtersChanged && !selectedNeighborhoodChanged && !currentNeighborhoodFilterChanged) {
+      return; // skip near-no-op move only if nothing significant changed
     }
   }
 

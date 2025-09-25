@@ -58,7 +58,7 @@ export default function Landing() {
           <img src={bg} alt="bg" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
         </Box>
         <Box sx={{ textAlign: 'center', p: 4, background: '#fff', borderRadius: 2, boxShadow: 3, width: 600, zIndex: 2 }}>
-          <Typography variant="h5" sx={{ mb: 2 }}>Upload CSV to visualize graph</Typography>
+          <Typography variant="h5" sx={{ mb: 2, color: '#333' }}>Upload CSV to visualize graph</Typography>
         <input
           ref={fileInputRef}
           type="file"
@@ -78,14 +78,23 @@ export default function Landing() {
         </Box>
         {selectedName && <Typography variant="body2" sx={{ mb: 2, color: '#444' }}>Selected: {selectedName}</Typography>}
 
-        <Typography variant="subtitle1" sx={{ mt: 2, mb: 1 }}>Previously uploaded files</Typography>
+        <Typography variant="subtitle1" sx={{ mt: 2, mb: 1, color: '#333' }}>Previously uploaded files</Typography>
         <List>
-          {savedFiles.length === 0 && <ListItem><ListItemText primary="No previous files" /></ListItem>}
+          {savedFiles.length === 0 && <ListItem><ListItemText primary="No previous files" sx={{ '& .MuiListItemText-primary': { color: '#666' } }} /></ListItem>}
           {savedFiles.map((f) => (
             <ListItem key={f.key} disablePadding>
-              <ListItemButton onClick={() => navigate(`/Graph/${encodeURIComponent(f.key)}`)}>
-                <InsertDriveFileOutlinedIcon fontSize="small" sx={{ mr: 1 }} />
-                <ListItemText primary={f.name} />
+              <ListItemButton 
+                onClick={() => navigate(`/Graph/${encodeURIComponent(f.key)}`)}
+                sx={{ 
+                  '&:hover': { backgroundColor: '#f5f5f5' },
+                  borderRadius: 1
+                }}
+              >
+                <InsertDriveFileOutlinedIcon fontSize="small" sx={{ mr: 1, color: '#1976d2' }} />
+                <ListItemText 
+                  primary={f.name} 
+                  sx={{ '& .MuiListItemText-primary': { color: '#333' } }}
+                />
               </ListItemButton>
             </ListItem>
           ))}

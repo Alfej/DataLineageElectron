@@ -30,6 +30,7 @@ import GraphModel, { TableRelation } from './graph/graphModel';
 import { registerTypesFromData, getColorFor, getAllTypeMaps } from '../utils/typeColors';
 import getLayoutedElements from './graph/layout';
 import simplifyFit from './simplifyFit';
+import { useNodeManualOperations } from './NodeManualOperations';
 import LayoutDirection from './LayoutDirection';
 import DownloadButton from './DownloadButton';
 import SearchNode from './SearchNode';
@@ -206,7 +207,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
     } catch { }
   }, [layoutDirection]);
 
-  // Neighborhood filter (multi-select: choose nodes to focus on their immediate parents + children)
+  // Neighborhood filter (multi-select: choose nodes to focus on their complete lineage - all ancestors and descendants)
   const [neighborhoodNodes, setNeighborhoodNodes] = useState<string[]>([]);
   const [selectedNeighborhoodNodes, setSelectedNeighborhoodNodes] = useState<string[]>([]);
   // Track the currently filtered neighborhood node for toggle functionality
@@ -222,6 +223,12 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
   // Highlighted node from search
   const [highlightedNode, setHighlightedNode] = useState<string | null>(null);
 
+  // Control flag to prevent history saves during auto-simplify sequence
+  const [isAutoSimplifying, setIsAutoSimplifying] = useState<boolean>(false);
+
+  // Control flag to prevent auto-simplify after undo/redo operations
+  const [isUndoRedoOperation, setIsUndoRedoOperation] = useState<boolean>(false);
+
   // Pagination for the table
   const [page, setPage] = useState<number>(1);
   const rowsPerPage = 10;
@@ -233,6 +240,19 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
 
   // Helper function to push history and immediately refresh undo/redo state
   const pushHistoryAndRefresh = useCallback(async (entry: GraphHistoryEntry) => {
+    // Don't save to history if we're in the middle of auto-simplify sequence
+    if (isAutoSimplifying) {
+      return;
+    }
+    
+    try {
+      await pushHistory(fileKey ?? null, entry);
+      await refreshCanUndo();
+    } catch { }
+  }, [fileKey, refreshCanUndo, isAutoSimplifying]);
+
+  // Force push to history (bypasses auto-simplify flag) - used at end of sequence
+  const forcePushHistoryAndRefresh = useCallback(async (entry: GraphHistoryEntry) => {
     try {
       await pushHistory(fileKey ?? null, entry);
       await refreshCanUndo();
@@ -302,26 +322,97 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
     // push history after reset
     try { await pushHistoryAndRefresh(makeSnapshot()); } catch { }
   };
-  // Helper function to get immediate parents and children from localStorage
-  const getImmediateFamily = (nodeId: string): { parents: string[], children: string[] } => {
-    try {
-      const stored = localStorage.getItem(getStorageKey("graph_node_state"));
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        const nodeData = parsed[nodeId];
-        if (nodeData) {
-          return {
-            parents: nodeData.parents || [],
-            children: nodeData.children || []
-          };
-        }
-      }
-    } catch { }
+  // Helper function to get complete lineage (all ancestors and descendants) stopping at hidden nodes
+  const getCompleteLineage = (nodeId: string): { parents: string[], children: string[] } => {
+    const allParents = new Set<string>();
+    const allChildren = new Set<string>();
+    const visited = new Set<string>();
     
-    // Fallback to data if localStorage doesn't have the info
-    const parents = data.filter((d) => d.childTableName === nodeId).map((d) => d.parentTableName).filter(Boolean);
-    const children = data.filter((d) => d.parentTableName === nodeId).map((d) => d.childTableName).filter(Boolean);
-    return { parents, children };
+    // Helper function to check if a node is hidden
+    const isNodeHidden = (id: string): boolean => {
+      try {
+        const stored = localStorage.getItem(getStorageKey("graph_node_state"));
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          const nodeData = parsed[id];
+          if (nodeData && nodeData.hidden === true) {
+            return true;
+          }
+        }
+      } catch { }
+      return false;
+    };
+    
+    // Helper function to get immediate parents and children
+    const getImmediateRelations = (id: string): { parents: string[], children: string[] } => {
+      try {
+        const stored = localStorage.getItem(getStorageKey("graph_node_state"));
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          const nodeData = parsed[id];
+          if (nodeData) {
+            return {
+              parents: nodeData.parents || [],
+              children: nodeData.children || []
+            };
+          }
+        }
+      } catch { }
+      
+      // Fallback to data if localStorage doesn't have the info
+      const parents = data.filter((d) => d.childTableName === id).map((d) => d.parentTableName).filter(Boolean);
+      const children = data.filter((d) => d.parentTableName === id).map((d) => d.childTableName).filter(Boolean);
+      return { parents, children };
+    };
+    
+    // Recursive function to traverse all ancestors
+    const traverseAncestors = (id: string) => {
+      if (visited.has(id)) return; // Prevent infinite loops
+      visited.add(id);
+      
+      const { parents } = getImmediateRelations(id);
+      
+      for (const parentId of parents) {
+        if (!isNodeHidden(parentId)) {
+          allParents.add(parentId);
+          traverseAncestors(parentId); // Recursively get ancestors of this parent
+        }
+        // If the parent is hidden, we stop traversing its ancestors
+      }
+    };
+    
+    // Recursive function to traverse all descendants
+    const traverseDescendants = (id: string) => {
+      if (visited.has(id)) return; // Prevent infinite loops
+      visited.add(id);
+      
+      const { children } = getImmediateRelations(id);
+      
+      for (const childId of children) {
+        if (!isNodeHidden(childId)) {
+          allChildren.add(childId);
+          traverseDescendants(childId); // Recursively get descendants of this child
+        }
+        // If the child is hidden, we stop traversing its descendants
+      }
+    };
+    
+    // Reset visited set for each traversal type
+    visited.clear();
+    traverseAncestors(nodeId);
+    
+    visited.clear();
+    traverseDescendants(nodeId);
+    
+    return {
+      parents: Array.from(allParents),
+      children: Array.from(allChildren)
+    };
+  };
+
+  // Legacy function name for compatibility - now uses complete lineage
+  const getImmediateFamily = (nodeId: string): { parents: string[], children: string[] } => {
+    return getCompleteLineage(nodeId);
   };
 
   // 🔹 Extract dynamic columns and initialize/restore filters
@@ -472,8 +563,8 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
 
     if (!neighborhoodNodes || neighborhoodNodes.length === 0) return base;
     
-    // For neighborhood filter, we want only immediate family (not recursive ancestors/descendants)
-    // The neighborhoodNodes array should already contain: [selectedNode, ...immediateParents, ...immediateChildren]
+    // For neighborhood filter, we want complete lineage (all ancestors and descendants)
+    // The neighborhoodNodes array should contain: [selectedNode, ...allAncestors, ...allDescendants]
     const allowedNodes = new Set(neighborhoodNodes);
 
     return base.filter((row) => {
@@ -484,6 +575,79 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
 
   // Reset page when filters/neighborhood change
   useEffect(() => { setPage(1); }, [filters, neighborhoodNodes, data]);
+
+  // Auto-simplify function - runs after filtering/hide operations
+  const autoSimplifyAndFit = useCallback(async () => {
+    // Set flag to block any intermediate history saves
+    setIsAutoSimplifying(true);
+    
+    try {
+      // Small delay to allow state updates to settle
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // Sequence: Operation executed -> Simplify -> Fit -> Save to history
+      const result = await simplifyFit({
+        nodes,
+        edges,
+        hiddenNodes,
+        layoutDirection,
+        positions,
+        setPositions,
+        setNodes,
+        filters,
+        neighborhoodNodes,
+        selectedNeighborhoodNodes,
+        currentNeighborhoodFilterNodeId,
+        debouncedSaveGraphState,
+        data,
+        filteredData,
+        fitView,
+        fitViewOptions: { duration: 800 },
+        skipHistory: true, // Skip history during simplify - we'll save at the end
+        skipSaveState: true // Skip state save during simplify - we'll save at the end
+      });
+      
+      if (result.success) {
+        // Save state after successful simplify
+        try {
+          debouncedSaveGraphState(positions, hiddenNodes, data, filteredData);
+        } catch (error) {
+          console.warn('Failed to save state after auto-simplify:', error);
+        }
+        
+        // Only now save to history after the complete sequence is done
+        try {
+          await forcePushHistoryAndRefresh(makeSnapshot());
+        } catch (error) {
+          console.warn('Failed to save history after auto-simplify:', error);
+        }
+      } else {
+        console.warn('Auto-simplify failed:', result.message);
+      }
+    } finally {
+      // Always clear the flag, even if there was an error
+      setIsAutoSimplifying(false);
+    }
+  }, [nodes, edges, hiddenNodes, layoutDirection, positions, setPositions, setNodes, filters, neighborhoodNodes, selectedNeighborhoodNodes, currentNeighborhoodFilterNodeId, debouncedSaveGraphState, data, filteredData, fitView, forcePushHistoryAndRefresh, makeSnapshot, setIsAutoSimplifying]);
+
+  // Initialize NodeManualOperations hook for handling drag/drop, hide/unhide operations
+  const nodeManualOps = useNodeManualOperations({
+    nodes,
+    positions,
+    hiddenNodes,
+    data,
+    filteredData,
+    filters,
+    layoutDirection,
+    neighborhoodNodes,
+    selectedNeighborhoodNodes,
+    currentNeighborhoodFilterNodeId,
+    setPositions,
+    setHiddenNodes,
+    getStorageKey,
+    pushHistoryAndRefresh,
+    onNodesChange
+  });
 
   // Persist filters and latest node state whenever filters/hidden/positions/filteredData/neighborhoodNodes change
   useEffect(() => {
@@ -496,13 +660,39 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
       const liveNodePositions = Object.fromEntries(nodes.map((n) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }]));
       const fullSnapshot = { ...positions, ...liveNodePositions } as Record<string, { x: number; y: number }>;
       try { saveGraphStateImmediate(fullSnapshot, hiddenNodes, data, filteredData); } catch { }
-      // Also store a version snapshot for undo (debounced via effect cadence)
-      try { 
-        console.log('push history'); 
-        await pushHistoryAndRefresh(makeSnapshot()); 
-      } catch { }
+      
+      // Don't push to history here during auto-simplify - the sequence will handle it at the end
     })();
-  }, [filters, hiddenNodes, positions, filteredData, neighborhoodNodes, selectedNeighborhoodNodes, currentNeighborhoodFilterNodeId, makeSnapshot, pushHistoryAndRefresh]);
+  }, [filters, hiddenNodes, positions, filteredData, neighborhoodNodes, selectedNeighborhoodNodes, currentNeighborhoodFilterNodeId, nodes, data]);
+
+  // Auto-simplify after filter changes (with debounce) — but skip when all filters are cleared (e.g., Reset All)
+  useEffect(() => {
+    // Don't auto-simplify if we're in the middle of undo/redo or already auto-simplifying
+    if (isUndoRedoOperation || isAutoSimplifying) {
+      return;
+    }
+
+    // Determine whether any filter/neighborhood is actually active
+    const hasActiveColumnFilters = Object.values(filters || {}).some((v: any) => Array.isArray(v) ? v.length > 0 : Boolean(v));
+    const hasActiveNeighborhood = Boolean(currentNeighborhoodFilterNodeId) 
+      || (Array.isArray(neighborhoodNodes) && neighborhoodNodes.length > 0)
+      || (Array.isArray(selectedNeighborhoodNodes) && selectedNeighborhoodNodes.length > 0);
+
+    // If nothing is active (i.e., Reset All), do not run simplify
+    if (!hasActiveColumnFilters && !hasActiveNeighborhood) {
+      return;
+    }
+
+    const timeoutId = setTimeout(() => {
+      if (data.length > 0) {
+        // Set flag before triggering auto-simplify
+        setIsAutoSimplifying(true);
+        autoSimplifyAndFit();
+      }
+    }, 200); // 200ms debounce
+
+    return () => clearTimeout(timeoutId);
+  }, [filters, neighborhoodNodes, selectedNeighborhoodNodes, currentNeighborhoodFilterNodeId]);
 
   // 🔹 Filter options (dependent on other selections and neighborhood)
   const filterOptions = useMemo(() => {
@@ -560,67 +750,11 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
     }
   }, [data, filters]);
 
-  // 🔹 Hide node function
-  const hideNode = async (nodeId: string) => {
-    // Toggle only this node's hidden flag. Do not hide parents/children.
-    const positionsSnapshotBeforeHide = {
-      ...positions,
-      ...Object.fromEntries(nodes.map((n) => [n.id, n.position])),
-    } as Record<string, { x: number; y: number }>;
+  // 🔹 Hide node function - using NodeManualOperations hook
+  const hideNode = nodeManualOps.hideNode;
 
-    const newHidden = new Set(hiddenNodes);
-    newHidden.add(nodeId);
-
-    // Persist immediate with parents/children included
-    saveGraphStateImmediate(positionsSnapshotBeforeHide, newHidden, data, filteredData);
-    setPositions((prev) => {
-      const node = nodes.find(n => n.id === nodeId);
-      if (node) {
-        const updated = { ...prev, [nodeId]: node.position };
-        return updated;
-      }
-      return prev;
-    });
-    setHiddenNodes(newHidden);
-    // push to history
-    try {
-      const snap: GraphHistoryEntry = {
-        ...makeSnapshot(),
-        hidden: Array.from(newHidden)
-      };
-      await pushHistoryAndRefresh(snap);
-    } catch { }
-  };
-
-  // 🔹 Unhide node function
-  const unhideNode = async (nodeId: string) => {
-    // Only unhide the single node; do not unhide parents/children automatically
-    const newHidden = new Set(hiddenNodes);
-    newHidden.delete(nodeId);
-
-    const liveNodePositions = Object.fromEntries(
-      nodes.map((n) => [
-        n.id,
-        {
-          x: Number(n.position.x.toFixed(5)),
-          y: Number(n.position.y.toFixed(5))
-        }
-      ])
-    );
-    const positionsSnapshotAfterUnhide = {
-      ...positions,
-      ...liveNodePositions,
-    } as Record<string, { x: number; y: number }>;
-    saveGraphStateImmediate(positionsSnapshotAfterUnhide, newHidden, data, filteredData);
-    setHiddenNodes(newHidden);
-    try {
-      const snap: GraphHistoryEntry = {
-        ...makeSnapshot(),
-        hidden: Array.from(newHidden)
-      };
-      await pushHistoryAndRefresh(snap);
-    } catch { }
-  };
+  // 🔹 Unhide node function - using NodeManualOperations hook
+  const unhideNode = nodeManualOps.unhideNode;
 
   // 🔹 Ctrl+click to hide node
   const onNodeClick = useCallback(async (event: React.MouseEvent, node: any) => {
@@ -649,10 +783,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
         fitView({ duration: 800 });
       }, 200); // Give time for state updates
       
-      // Push to history
-      try {
-        await pushHistoryAndRefresh(makeSnapshot());
-      } catch { }
+      // Do not push history here; atomic simplify sequence will save once at the end
       
       return;
     }
@@ -661,7 +792,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
     // Get immediate family from localStorage
     const { parents, children } = getImmediateFamily(node.id);
     
-    // Create neighborhood filter: selected node + immediate parents + immediate children
+    // Create neighborhood filter: selected node + complete lineage (all ancestors + all descendants)
     const neighborhoodFilter = [node.id, ...parents, ...children].filter(Boolean);
     
     // Set both the user selection (just the clicked node) and the complete neighborhood
@@ -674,11 +805,8 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
       fitView({ duration: 800 });
     }, 200); // Give time for state updates
     
-    // Push to history
-    try {
-      await pushHistoryAndRefresh(makeSnapshot());
-    } catch { }
-  }, [currentNeighborhoodFilterNodeId, getImmediateFamily, setNeighborhoodNodes, fitView, pushHistoryAndRefresh, makeSnapshot]);
+    // Do not push history here; atomic simplify sequence will save once at the end
+  }, [currentNeighborhoodFilterNodeId, getImmediateFamily, fitView, pushHistoryAndRefresh, nodes, positions, hiddenNodes, filters, layoutDirection]);
 
   // 🔹 Build nodes & edges
   useEffect(() => {
@@ -711,7 +839,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
       // Create parent node
       if (!hiddenNodes.has(parent) && !nodeMap[parent]) {
         nodeMap[parent] = true;
-        const parentLabel = `${parent} (${row.parentTableType})`;
+        const parentLabel = parent;
 
         createdNodes.push({
           id: parent,
@@ -742,7 +870,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
       // Create child node
       if (!hiddenNodes.has(child) && !nodeMap[child]) {
         nodeMap[child] = true;
-        const childLabel = `${child} (${row.childTableType})`;
+        const childLabel = child;
 
         createdNodes.push({
           type: 'fourHandle',
@@ -889,47 +1017,8 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
     runInitialLayout();
   }, [filteredData, hiddenNodes, positions, layoutDirection]);
 
-  // 🔹 Track node drag and update positions with precise coordinates
-  const handleNodesChange = useCallback((changes: any) => {
-    onNodesChange(changes);
-    // Update positions on drag with high precision
-    const positionUpdates = changes
-      .filter((c: any) => c.type === 'position')
-      .reduce((acc: any, c: any) => {
-        if (c.position && typeof c.position.x === 'number' && typeof c.position.y === 'number') {
-          acc[c.id] = {
-            x: Number(c.position.x.toFixed(5)),
-            y: Number(c.position.y.toFixed(5))
-          };
-        }
-        return acc;
-      }, {});
-    if (Object.keys(positionUpdates).length > 0) {
-      // Build a full snapshot: stored positions + live node positions + these updates
-      const livePositions = Object.fromEntries(nodes.map((n: any) => [n.id, n.position]));
-      const snapshot: Record<string, { x: number; y: number }> = {
-        ...positions,
-        ...livePositions,
-        ...positionUpdates,
-      };
-      // Save snapshot (debounced) and then update state
-      debouncedSaveGraphState(snapshot, hiddenNodes, data, filteredData);
-      setPositions((prev) => ({ ...prev, ...positionUpdates }));
-      // if drag ended, push to history
-      const dragEnded = changes.some((c: any) => c.type === 'position' && (c.dragging === false || typeof c.dragging === 'undefined'));
-      if (dragEnded) {
-        (async () => {
-          try {
-            const snap: GraphHistoryEntry = {
-              ...makeSnapshot(),
-              positions: { ...snapshot }
-            };
-            await pushHistoryAndRefresh(snap);
-          } catch { }
-        })();
-      }
-    }
-  }, [onNodesChange, debouncedSaveGraphState, nodes, hiddenNodes, data, filteredData]);
+  // 🔹 Track node drag and update positions - using NodeManualOperations hook
+  const handleNodesChange = nodeManualOps.handleNodesChange;
 
   // 🔹 Node hover
   const onNodeMouseEnter = useCallback((_: any, node: any) => setHoveredNode(node.id), []);
@@ -1045,9 +1134,9 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
   // Memoize nodeTypes to avoid recreating the object on every render (prevents React Flow warnings)
   const nodeTypesMemo = useMemo(() => ({ fourHandle: FourHandleNode }), []);
 
-  // Simplify + fit graph using external utility
+  // Manual simplify + fit graph using external utility (for button clicks)
   const simplifyGraph = useCallback(async () => {
-    await simplifyFit({
+    const result = await simplifyFit({
       nodes,
       edges,
       hiddenNodes,
@@ -1059,12 +1148,18 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
       filters,
       neighborhoodNodes,
       selectedNeighborhoodNodes,
+      currentNeighborhoodFilterNodeId,
       debouncedSaveGraphState,
       data,
       filteredData,
-      fitView
+      fitView,
+      fitViewOptions: { duration: 800 }
     });
-  }, [nodes, edges, hiddenNodes, layoutDirection, positions, setPositions, setNodes, pushHistoryAndRefresh, filters, neighborhoodNodes, selectedNeighborhoodNodes, debouncedSaveGraphState, data, filteredData, fitView]);
+    
+    if (!result.success) {
+      console.warn('Simplify graph failed:', result.message);
+    }
+  }, [nodes, edges, hiddenNodes, layoutDirection, positions, setPositions, setNodes, pushHistoryAndRefresh, filters, neighborhoodNodes, selectedNeighborhoodNodes, currentNeighborhoodFilterNodeId, debouncedSaveGraphState, data, filteredData, fitView]);
 
   // Handle node selection from search
   const handleNodeSearch = useCallback((nodeId: string) => {
@@ -1090,6 +1185,9 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
 
   // Undo handler
   const handleUndo = useCallback(async () => {
+    // Set flag to prevent auto-simplify during and after undo
+    setIsUndoRedoOperation(true);
+    
     try {
       const entry = await undoHistory(fileKey ?? null);
       if (!entry) return;
@@ -1110,17 +1208,22 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
         localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(entry.filters || {}));
         localStorage.setItem(getStorageKey('graph_layout_direction'), entry.layoutDirection || 'TB');
       } catch { }
-      // After restoring, just fit to screen
+      // After restoring, just fit to screen (no auto-simplify)
       setTimeout(() => {
         try { fitView({ duration: 800 }); } catch { }
+        // Clear the flag after fit is complete
+        setTimeout(() => setIsUndoRedoOperation(false), 1000);
       }, 200);
     } finally {
       refreshCanUndo();
     }
-  }, [fileKey, getStorageKey, setFilters, setLayoutDirection, setHiddenNodes, setPositions, setNeighborhoodNodes, setSelectedNeighborhoodNodes, setNodes, refreshCanUndo, fitView]);
+  }, [fileKey, getStorageKey, setFilters, setLayoutDirection, setHiddenNodes, setPositions, setNeighborhoodNodes, setSelectedNeighborhoodNodes, setNodes, refreshCanUndo, fitView, setIsUndoRedoOperation]);
 
   // Redo handler
   const handleRedo = useCallback(async () => {
+    // Set flag to prevent auto-simplify during and after redo
+    setIsUndoRedoOperation(true);
+    
     try {
       const entry = await redoHistory(fileKey ?? null);
       if (!entry) return;
@@ -1141,14 +1244,16 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
         localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(entry.filters || {}));
         localStorage.setItem(getStorageKey('graph_layout_direction'), entry.layoutDirection || 'TB');
       } catch { }
-      // After restoring, just fit to screen
+      // After restoring, just fit to screen (no auto-simplify)
       setTimeout(() => {
         try { fitView({ duration: 800 }); } catch { }
+        // Clear the flag after fit is complete
+        setTimeout(() => setIsUndoRedoOperation(false), 1000);
       }, 200);
     } finally {
       refreshCanUndo();
     }
-  }, [fileKey, getStorageKey, setFilters, setLayoutDirection, setHiddenNodes, setPositions, setNeighborhoodNodes, setSelectedNeighborhoodNodes, setNodes, refreshCanUndo, fitView]);
+  }, [fileKey, getStorageKey, setFilters, setLayoutDirection, setHiddenNodes, setPositions, setNeighborhoodNodes, setSelectedNeighborhoodNodes, setNodes, refreshCanUndo, fitView, setIsUndoRedoOperation]);
 
   return (
     <>
@@ -1366,8 +1471,12 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
                 title="Neighborhood"
                 options={neighborhoodOptions}
                 value={selectedNeighborhoodNodes}
-                onChange={(vals) => {
-                  setSelectedNeighborhoodNodes(vals);
+                onChange={async (vals) => {
+                  const newSelectedNeighborhoodNodes = vals || [];
+                  let newNeighborhoodNodes: string[] = [];
+                  let newCurrentNeighborhoodFilterNodeId: string | null = null;
+                  
+                  setSelectedNeighborhoodNodes(newSelectedNeighborhoodNodes);
                   
                   if (!vals || vals.length === 0) {
                     setNeighborhoodNodes([]);
@@ -1384,7 +1493,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
                       // Add the selected node itself
                       completeNeighborhood.add(nodeId);
                       
-                      // Get immediate family for each selected node
+                      // Get complete lineage for each selected node
                       const { parents, children } = getImmediateFamily(nodeId);
                       
                       // Add immediate parents and children
@@ -1392,10 +1501,14 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
                       children.forEach(child => completeNeighborhood.add(child));
                     });
                     
-                    setNeighborhoodNodes(Array.from(completeNeighborhood));
-                    // Update the current filtered node ID (use first selected if multiple, null if multiple)
-                    setCurrentNeighborhoodFilterNodeId(vals.length === 1 ? vals[0] : null);
+                    newNeighborhoodNodes = Array.from(completeNeighborhood);
+                    newCurrentNeighborhoodFilterNodeId = vals.length === 1 ? vals[0] : null;
+                    
+                    setNeighborhoodNodes(newNeighborhoodNodes);
+                    setCurrentNeighborhoodFilterNodeId(newCurrentNeighborhoodFilterNodeId);
                   }
+                  
+                  // Do not push history here; atomic simplify sequence will save once at the end
                   
                   setTimeout(() => {
                     fitView({ duration: 800 });
@@ -1411,6 +1524,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
             nodes={visualNodes}
             edges={visualEdges}
             onNodesChange={handleNodesChange}
+            onNodeDragStop={nodeManualOps.onNodeDragStop}
             onEdgesChange={onEdgesChange}
             onNodeMouseEnter={onNodeMouseEnter}
             onNodeMouseLeave={onNodeMouseLeave}
@@ -1428,6 +1542,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
             <AnimatedControls 
               style={{ background: "#e3f2fd", borderRadius: 8 }} 
               onResetFilters={handleResetFilters}
+              onSimplify={simplifyGraph}
             />
             <MiniMap
               nodeColor={(n) => (hiddenNodes.has(n.id) ? "#bdbdbd" : "#1976d2")}
@@ -1458,22 +1573,39 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
                 title={col}
                 options={filterOptions[col] || []}
                 value={filters[col] || []}
-                onChange={(vals) => {
-                  setFilters((prev) => {
-                    const newFilters = { ...prev, [col]: vals };
-                    try { localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(newFilters)); } catch { }
-                    // Persist node positions & filteredOut
-                    const liveNodePositions = Object.fromEntries(nodes.map((n) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }]));
-                    const fullSnapshot = { ...positions, ...liveNodePositions } as Record<string, { x: number; y: number }>;
-                    try { saveGraphStateImmediate(fullSnapshot, hiddenNodes, data, filteredData); } catch { }
-                    
-                    // Fit view after filter change
-                    setTimeout(() => {
-                      fitView({ duration: 800 });
-                    }, 200); // Give time for state updates
-                    
-                    return newFilters;
-                  });
+                onChange={async (vals) => {
+                  const newFilters = { ...filters, [col]: vals };
+                  setFilters(newFilters);
+                  
+                  try { localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(newFilters)); } catch { }
+                  
+                  // Calculate new filtered data manually with the updated filters
+                  const baseFiltered = data.filter((row) =>
+                    Object.entries(newFilters).every(([colKey, val]) => {
+                      if (!val || (Array.isArray(val) && val.length === 0)) return true;
+                      if (Array.isArray(val)) return val.includes(String(row[colKey]));
+                      return String(row[colKey]) === val;
+                    })
+                  );
+                  
+                  const newFilteredData = !neighborhoodNodes || neighborhoodNodes.length === 0 
+                    ? baseFiltered 
+                    : baseFiltered.filter((row) => {
+                        const allowedNodes = new Set(neighborhoodNodes);
+                        return allowedNodes.has(row.parentTableName) && allowedNodes.has(row.childTableName);
+                      });
+                  
+                  // Persist node positions & filteredOut with new filtered data
+                  const liveNodePositions = Object.fromEntries(nodes.map((n) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }]));
+                  const fullSnapshot = { ...positions, ...liveNodePositions } as Record<string, { x: number; y: number }>;
+                  try { saveGraphStateImmediate(fullSnapshot, hiddenNodes, data, newFilteredData); } catch { }
+                  
+                  // Do not push history here; atomic simplify sequence will save once at the end
+                  
+                  // Fit view after filter change
+                  setTimeout(() => {
+                    fitView({ duration: 800 });
+                  }, 200); // Give time for state updates
                 }}
               />
             </Box>
@@ -1490,8 +1622,12 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
                 title="Neighborhood"
                 options={neighborhoodOptions}
                 value={selectedNeighborhoodNodes}
-                onChange={(vals) => {
-                  setSelectedNeighborhoodNodes(vals);
+                onChange={async (vals) => {
+                  const newSelectedNeighborhoodNodes = vals || [];
+                  let newNeighborhoodNodes: string[] = [];
+                  let newCurrentNeighborhoodFilterNodeId: string | null = null;
+                  
+                  setSelectedNeighborhoodNodes(newSelectedNeighborhoodNodes);
                   
                   if (!vals || vals.length === 0) {
                     setNeighborhoodNodes([]);
@@ -1508,18 +1644,22 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
                       // Add the selected node itself
                       completeNeighborhood.add(nodeId);
                       
-                      // Get immediate family for each selected node
+                      // Get complete lineage for each selected node
                       const { parents, children } = getImmediateFamily(nodeId);
                       
-                      // Add immediate parents and children
+                      // Add all ancestors and descendants
                       parents.forEach(parent => completeNeighborhood.add(parent));
                       children.forEach(child => completeNeighborhood.add(child));
                     });
                     
-                    setNeighborhoodNodes(Array.from(completeNeighborhood));
-                    // Update the current filtered node ID (use first selected if multiple, null if multiple)
-                    setCurrentNeighborhoodFilterNodeId(vals.length === 1 ? vals[0] : null);
+                    newNeighborhoodNodes = Array.from(completeNeighborhood);
+                    newCurrentNeighborhoodFilterNodeId = vals.length === 1 ? vals[0] : null;
+                    
+                    setNeighborhoodNodes(newNeighborhoodNodes);
+                    setCurrentNeighborhoodFilterNodeId(newCurrentNeighborhoodFilterNodeId);
                   }
+                  
+                  // Do not push history here; atomic simplify sequence will save once at the end
                   
                   // Fit view after neighborhood change
                   setTimeout(() => {
@@ -1579,14 +1719,6 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
           </Typography>
         </Box>
         <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-          <Button variant="contained" onClick={() => {
-            const liveNodePositions = Object.fromEntries(nodes.map((n) => [n.id, { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }]));
-            const fullSnapshot = { ...positions, ...liveNodePositions } as Record<string, { x: number; y: number }>;
-            try { saveGraphStateImmediate(fullSnapshot, hiddenNodes, data, filteredData); } catch { }
-            try { localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(filters)); } catch { }
-          }} sx={{ fontWeight: 'bold', backgroundColor: '#FFC107', color: '#000', '&:hover': { backgroundColor: '#e0a800' } }}>
-            <SaveOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Save Node Positions
-          </Button>
           <Button variant="contained" onClick={() => navigate('/')} sx={{ fontWeight: 'bold', backgroundColor: '#0055A4', color: '#fff', '&:hover': { backgroundColor: '#004080' } }}>
             <UploadFileOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Upload CSV
           </Button>
@@ -1601,9 +1733,9 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 4, flexWrap: 'wrap' }}>
           <Box sx={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             <Box>
-              <Typography variant="subtitle2" sx={{ mb: 1 }}>Table Types</Typography>
+              <Typography variant="subtitle2" sx={{ mb: 1, color: '#333' }}>Table Types</Typography>
               <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                {Object.keys(tableTypeMap).length === 0 && <Typography variant="body2">No table types</Typography>}
+                {Object.keys(tableTypeMap).length === 0 && <Typography variant="body2" sx={{ color: '#666' }}>No table types</Typography>}
                 {Object.entries(tableTypeMap).map(([t, c]) => (
                   <label key={t} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', borderRadius: 16, background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
                     <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 6, background: c }} />
@@ -1613,9 +1745,9 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
               </Box>
             </Box>
             <Box>
-              <Typography variant="subtitle2" sx={{ mb: 1 }}>Relationship Types</Typography>
+              <Typography variant="subtitle2" sx={{ mb: 1, color: '#333' }}>Relationship Types</Typography>
               <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                {Object.keys(relTypeMap).length === 0 && <Typography variant="body2">No relationship types</Typography>}
+                {Object.keys(relTypeMap).length === 0 && <Typography variant="body2" sx={{ color: '#666' }}>No relationship types</Typography>}
                 {Object.entries(relTypeMap).map(([t, c]) => (
                   <label key={t} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', borderRadius: 16, background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
                     <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 6, background: c }} />
@@ -1625,19 +1757,19 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
               </Box>
             </Box>
             <Box>
-              <Typography variant="subtitle2" sx={{ mb: 1 }}>Line Types</Typography>
+              <Typography variant="subtitle2" sx={{ mb: 1, color: '#333' }}>Line Types</Typography>
               <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, background: '#fff', padding: '6px 10px', borderRadius: 16, boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
                   <svg width="36" height="12" viewBox="0 0 36 12" xmlns="http://www.w3.org/2000/svg">
                     <line x1="2" y1="6" x2="34" y2="6" stroke="#444" strokeWidth="2" strokeLinecap="round" />
                   </svg>
-                  <Typography variant="body2">Direct relationship</Typography>
+                  <Typography variant="body2" sx={{ color: '#333' }}>Direct relationship</Typography>
                 </Box>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, background: '#fff', padding: '6px 10px', borderRadius: 16, boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
                   <svg width="36" height="12" viewBox="0 0 36 12" xmlns="http://www.w3.org/2000/svg">
                     <line x1="2" y1="6" x2="34" y2="6" stroke="#444" strokeWidth="2" strokeLinecap="round" strokeDasharray="4 4" />
                   </svg>
-                  <Typography variant="body2">Indirect relationship</Typography>
+                  <Typography variant="body2" sx={{ color: '#333' }}>Indirect relationship</Typography>
                 </Box>
               </Box>
             </Box>
@@ -1745,6 +1877,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
           nodes={visualNodes}
           edges={visualEdges}
           onNodesChange={handleNodesChange}
+          onNodeDragStop={nodeManualOps.onNodeDragStop}
           onEdgesChange={onEdgesChange}
           onNodeMouseEnter={onNodeMouseEnter}
           onNodeMouseLeave={onNodeMouseLeave}
@@ -1761,6 +1894,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
           <AnimatedControls 
             style={{ background: "#e3f2fd", borderRadius: 8 }} 
             onResetFilters={handleResetFilters}
+            onSimplify={simplifyGraph}
           />
           <MiniMap
             nodeColor={(n) => (hiddenNodes.has(n.id) ? "#bdbdbd" : "#1976d2")}
@@ -1812,13 +1946,13 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
           <Table size="small" sx={{ minWidth: 650 }}>
             <TableHead>
               <TableRow sx={{ backgroundColor: PEPSI_BLUE }}>
-                <TableCell sx={{ fontWeight: 'bold', color: '#fff' }}>Parent Node</TableCell>
-                <TableCell sx={{ fontWeight: 'bold', color: '#fff' }}>Parent Type</TableCell>
-                <TableCell sx={{ fontWeight: 'bold', color: '#fff' }}>Relationship</TableCell>
-                <TableCell sx={{ fontWeight: 'bold', color: '#fff' }}>Child Node</TableCell>
-                <TableCell sx={{ fontWeight: 'bold', color: '#fff' }}>Child Type</TableCell>
-                <TableCell sx={{ fontWeight: 'bold', color: '#fff' }}>Client ID</TableCell>
-                <TableCell sx={{ fontWeight: 'bold', color: '#fff' }}>App ID</TableCell>
+                <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Parent Node</TableCell>
+                <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Parent Type</TableCell>
+                <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Relationship</TableCell>
+                <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Child Node</TableCell>
+                <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Child Type</TableCell>
+                <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Client ID</TableCell>
+                <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>App ID</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>

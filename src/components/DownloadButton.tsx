@@ -1,5 +1,5 @@
 import React, { useCallback } from "react";
-import { Panel, useReactFlow, getNodesBounds } from "reactflow";
+import { Panel } from "reactflow";
 import { toPng } from "html-to-image";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import FullscreenIcon from "@mui/icons-material/Fullscreen";
@@ -30,47 +30,19 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({
   onUndo,
   onRedo,
 }) => {
-  const { getNodes } = useReactFlow();
   
   const onClick = useCallback(async () => {
-    // Get the nodes to calculate bounds
-    const nodes = getNodes().filter(node => node.width && node.height);
+    // Get the React Flow wrapper element (the container that shows the current viewport)
+    const reactFlowWrapper = document.querySelector('.react-flow') as HTMLElement;
     
-    if (nodes.length === 0) {
-      console.warn("No nodes to export");
-      return;
-    }
-
-    // Calculate the bounds of all nodes
-    const nodesBounds = getNodesBounds(nodes);
-    
-    // Add some padding around the bounds
-    const padding = 50;
-    const expandedBounds = {
-      x: nodesBounds.x - padding,
-      y: nodesBounds.y - padding,
-      width: nodesBounds.width + padding * 2,
-      height: nodesBounds.height + padding * 2,
-    };
-
-    // Get the React Flow viewport element  
-    const viewportElement = document.querySelector('.react-flow__viewport') as HTMLElement;
-    
-    if (!viewportElement) {
-      console.warn("Could not find React Flow viewport element");
+    if (!reactFlowWrapper) {
+      console.warn("Could not find React Flow wrapper element");
       return;
     }
 
     try {
-      const dataUrl = await toPng(viewportElement, {
+      const dataUrl = await toPng(reactFlowWrapper, {
         backgroundColor: '#ffffff',
-        width: expandedBounds.width,
-        height: expandedBounds.height,
-        style: {
-          width: expandedBounds.width + 'px',
-          height: expandedBounds.height + 'px',
-          transform: `translate(${-expandedBounds.x}px, ${-expandedBounds.y}px)`,
-        },
         filter: (node) => {
           // Exclude React Flow UI elements but include nodes and edges
           if (node.classList?.contains('react-flow__controls')) return false;
@@ -87,7 +59,7 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({
     } catch (e) {
       console.error("Image export failed:", e);
     }
-  }, [fileName, getNodes]);
+  }, [fileName]);
 
   return (
     <Panel

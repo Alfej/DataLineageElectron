@@ -23,7 +23,7 @@
   },
   "build": {
     "appId": "com.pepsico.DataLineageApp",
-    "productName": "Data Lineage App",
+    "productName": "Lineage Visualization App",
     "directories": {
       "output": "release",
       "buildResources": "build"

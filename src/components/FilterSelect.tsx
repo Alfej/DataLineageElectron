@@ -42,7 +42,7 @@ const FilterSelect: React.FC<Props> = ({ title, options, value, onChange, placeh
 
   return (
     <Box>
-      <Typography variant="subtitle2" sx={{ mb: 0.5 }}>{title}</Typography>
+      <Typography variant="subtitle2" sx={{ mb: 0.5, color: '#333' }}>{title}</Typography>
       <FormControl fullWidth size={size}>
         <Select
           multiple

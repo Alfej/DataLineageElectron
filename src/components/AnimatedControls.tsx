@@ -5,6 +5,7 @@ import AddIcon from '@mui/icons-material/Add';
 import RemoveIcon from '@mui/icons-material/Remove';
 import FitScreenIcon from '@mui/icons-material/FitScreen';
 import SettingsBackupRestoreIcon from '@mui/icons-material/SettingsBackupRestore';
+import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import { styled } from '@mui/material/styles';
 
 const ControlsContainer = styled(Box)(() => ({
@@ -42,9 +43,10 @@ const ControlButton = styled(IconButton)(() => ({
 interface AnimatedControlsProps {
   style?: React.CSSProperties;
   onResetFilters?: () => void;
+  onSimplify?: () => void;
 }
 
-const AnimatedControls: React.FC<AnimatedControlsProps> = ({ style, onResetFilters }) => {
+const AnimatedControls: React.FC<AnimatedControlsProps> = ({ style, onResetFilters, onSimplify }) => {
   const { zoomIn, zoomOut, fitView } = useReactFlow();
 
   const handleZoomIn = () => {
@@ -64,6 +66,15 @@ const AnimatedControls: React.FC<AnimatedControlsProps> = ({ style, onResetFilte
 
   return (
     <ControlsContainer style={style}>
+      {onSimplify && (
+        <ControlButton 
+          onClick={onSimplify}
+          title="Simplify Graph"
+          size="small"
+        >
+          <AutoAwesomeOutlinedIcon />
+        </ControlButton>
+      )}
       {onResetFilters && (
         <ControlButton 
           onClick={onResetFilters}
