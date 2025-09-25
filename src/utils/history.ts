@@ -9,6 +9,7 @@ export type GraphHistoryEntry = {
   layoutDirection: string;
   neighborhoodNodes: string[];
   selectedNeighborhoodNodes?: string[]; // User's original selection before expansion
+  currentNeighborhoodFilterNodeId?: string | null; // Track the node that triggered neighborhood filter for toggle functionality
   timestamp: number;
   _sig?: string; // internal hash signature for dedupe
 };

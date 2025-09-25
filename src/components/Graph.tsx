@@ -29,6 +29,7 @@ import FilterSelect from './FilterSelect';
 import GraphModel, { TableRelation } from './graph/graphModel';
 import { registerTypesFromData, getColorFor, getAllTypeMaps } from '../utils/typeColors';
 import getLayoutedElements from './graph/layout';
+import simplifyFit from './simplifyFit';
 import LayoutDirection from './LayoutDirection';
 import DownloadButton from './DownloadButton';
 import SearchNode from './SearchNode';
@@ -208,6 +209,8 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
   // Neighborhood filter (multi-select: choose nodes to focus on their immediate parents + children)
   const [neighborhoodNodes, setNeighborhoodNodes] = useState<string[]>([]);
   const [selectedNeighborhoodNodes, setSelectedNeighborhoodNodes] = useState<string[]>([]);
+  // Track the currently filtered neighborhood node for toggle functionality
+  const [currentNeighborhoodFilterNodeId, setCurrentNeighborhoodFilterNodeId] = useState<string | null>(null);
   const [canUndo, setCanUndo] = useState<boolean>(false);
   const [canRedo, setCanRedo] = useState<boolean>(false);
   
@@ -272,9 +275,10 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
       layoutDirection,
       neighborhoodNodes: [...neighborhoodNodes],
       selectedNeighborhoodNodes: [...selectedNeighborhoodNodes],
+      currentNeighborhoodFilterNodeId,
       timestamp: Date.now(),
     };
-  }, [nodes, positions, hiddenNodes, filters, layoutDirection, neighborhoodNodes, selectedNeighborhoodNodes]);
+  }, [nodes, positions, hiddenNodes, filters, layoutDirection, neighborhoodNodes, selectedNeighborhoodNodes, currentNeighborhoodFilterNodeId]);
   const resetHiddenNodes = async () => {
     try {
       const stored = localStorage.getItem(getStorageKey("graph_node_state"));
@@ -422,6 +426,13 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
           label: relationship,
           style: { strokeWidth: 2, stroke: getColorFor('relationship', relationship) || '#444' },
           labelStyle: { fill: '#333', fontWeight: 600, fontSize: 12 },
+          labelBgStyle: { 
+            fill: "#ffffff", 
+            fillOpacity: 0.9,
+            rx: 12, // rounded corners
+            ry: 12  // rounded corners
+          },
+          labelBgPadding: [8, 12], // [vertical, horizontal] padding
           markerEnd: { type: MarkerType.ArrowClosed, width: 20, height: 20, color: getColorFor('relationship', relationship) || '#444' },
         });
       });
@@ -491,7 +502,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
         await pushHistoryAndRefresh(makeSnapshot()); 
       } catch { }
     })();
-  }, [filters, hiddenNodes, positions, filteredData, neighborhoodNodes, selectedNeighborhoodNodes, makeSnapshot, pushHistoryAndRefresh]);
+  }, [filters, hiddenNodes, positions, filteredData, neighborhoodNodes, selectedNeighborhoodNodes, currentNeighborhoodFilterNodeId, makeSnapshot, pushHistoryAndRefresh]);
 
   // 🔹 Filter options (dependent on other selections and neighborhood)
   const filterOptions = useMemo(() => {
@@ -622,10 +633,31 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
     }
   }, [hiddenNodes, hideNode]);
 
-  // 🔹 Right-click to apply neighborhood filter
+  // 🔹 Right-click to apply neighborhood filter (with toggle functionality)
   const onNodeContextMenu = useCallback(async (event: React.MouseEvent, node: any) => {
     event.preventDefault();
     
+    // Check if we're right-clicking on the same node that's currently filtered
+    if (currentNeighborhoodFilterNodeId === node.id) {
+      // Toggle OFF: Reset neighborhood filter to show full graph
+      setSelectedNeighborhoodNodes([]);
+      setNeighborhoodNodes([]);
+      setCurrentNeighborhoodFilterNodeId(null);
+      
+      // Fit view after resetting filter
+      setTimeout(() => {
+        fitView({ duration: 800 });
+      }, 200); // Give time for state updates
+      
+      // Push to history
+      try {
+        await pushHistoryAndRefresh(makeSnapshot());
+      } catch { }
+      
+      return;
+    }
+    
+    // Apply neighborhood filter for a different node (or first time)
     // Get immediate family from localStorage
     const { parents, children } = getImmediateFamily(node.id);
     
@@ -635,21 +667,18 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
     // Set both the user selection (just the clicked node) and the complete neighborhood
     setSelectedNeighborhoodNodes([node.id]);
     setNeighborhoodNodes(neighborhoodFilter);
+    setCurrentNeighborhoodFilterNodeId(node.id);
     
-    // Fit view and simplify graph after neighborhood filter
-    setTimeout(async () => {
+    // Fit view after neighborhood filter
+    setTimeout(() => {
       fitView({ duration: 800 });
-      // Wait for fitView animation to complete, then simplify
-      setTimeout(async () => {
-        await simplifyGraph();
-      }, 900); // Wait for fitView duration + buffer
     }, 200); // Give time for state updates
     
     // Push to history
     try {
       await pushHistoryAndRefresh(makeSnapshot());
     } catch { }
-  }, [getImmediateFamily, setNeighborhoodNodes, fitView, pushHistoryAndRefresh, makeSnapshot]);
+  }, [currentNeighborhoodFilterNodeId, getImmediateFamily, setNeighborhoodNodes, fitView, pushHistoryAndRefresh, makeSnapshot]);
 
   // 🔹 Build nodes & edges
   useEffect(() => {
@@ -766,6 +795,13 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
           label: relationship,
           style: { strokeWidth: 2, stroke: getColorFor('relationship', relationship) || "#444" },
           labelStyle: { fill: "#333", fontWeight: 600, fontSize: 12 },
+          labelBgStyle: { 
+            fill: "#ffffff", 
+            fillOpacity: 0.9,
+            rx: 12, // rounded corners
+            ry: 12  // rounded corners
+          },
+          labelBgPadding: [8, 12], // [vertical, horizontal] padding
           markerEnd: {
             type: MarkerType.ArrowClosed,
             width: 20,
@@ -820,6 +856,13 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
                   label: rel,
                   style: { strokeWidth: 2, stroke: getColorFor('relationship', rel) || '#444', strokeDasharray: '4 4', strokeLinecap: 'round' },
                   labelStyle: { fill: '#333', fontWeight: 600, fontSize: 12 },
+                  labelBgStyle: { 
+                    fill: "#ffffff", 
+                    fillOpacity: 0.9,
+                    rx: 12, // rounded corners
+                    ry: 12  // rounded corners
+                  },
+                  labelBgPadding: [8, 12], // [vertical, horizontal] padding
                   markerEnd: { type: MarkerType.ArrowClosed, width: 20, height: 20, color: getColorFor('relationship', rel) || '#444' },
                 });
               }
@@ -1002,71 +1045,26 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
   // Memoize nodeTypes to avoid recreating the object on every render (prevents React Flow warnings)
   const nodeTypesMemo = useMemo(() => ({ fourHandle: FourHandleNode }), []);
 
-  // Simplify graph using Dagre layout
+  // Simplify + fit graph using external utility
   const simplifyGraph = useCallback(async () => {
-    try {
-      // Use a small delay to ensure filteredData is updated
-      await new Promise(resolve => setTimeout(resolve, 50));
-      
-      // Get visible nodes and edges based on current filtered data
-      const visibleNodes = nodes.filter(n => !hiddenNodes.has(n.id));
-      const visibleEdges = edges.filter(e => !hiddenNodes.has(e.source) && !hiddenNodes.has(e.target));
-      
-      if (visibleNodes.length === 0) return;
-      
-      console.log('Simplifying graph with', visibleNodes.length, 'nodes and', visibleEdges.length, 'edges');
-      
-      const layouted = await getLayoutedElements(visibleNodes, visibleEdges, layoutDirection);
-      
-      const newPositions = { ...positions };
-      layouted.nodes.forEach((n: any) => {
-        if (n.position && typeof n.position.x === 'number' && typeof n.position.y === 'number') {
-          newPositions[n.id] = { 
-            x: Number(n.position.x.toFixed(5)), 
-            y: Number(n.position.y.toFixed(5)) 
-          };
-        }
-      });
-      
-      // Update positions state
-      setPositions(newPositions);
-      
-      // Update nodes with new positions
-      setNodes(prev => prev.map(node => ({
-        ...node,
-        position: newPositions[node.id] || node.position
-      })));
-      
-      // Save to localStorage
-      const layoutPos = Object.fromEntries(
-        layouted.nodes.map((n: any) => [
-          n.id, 
-          { x: Number(n.position.x.toFixed(5)), y: Number(n.position.y.toFixed(5)) }
-        ])
-      );
-      const fullSnapshot = { ...positions, ...layoutPos } as Record<string, { x: number; y: number }>;
-      debouncedSaveGraphState(fullSnapshot, hiddenNodes, data, filteredData);
-      
-      // Add to history
-      try {
-        await pushHistoryAndRefresh({
-          positions: newPositions,
-          hidden: Array.from(hiddenNodes),
-          filters,
-          layoutDirection,
-          neighborhoodNodes: [...neighborhoodNodes],
-          selectedNeighborhoodNodes: [...selectedNeighborhoodNodes],
-          timestamp: Date.now()
-        });
-      } catch (error) {
-        console.warn('Failed to save to history:', error);
-      }
-      
-      console.log('Graph simplified successfully');
-    } catch (error) {
-      console.warn('Failed to simplify graph:', error);
-    }
-  }, [nodes, edges, hiddenNodes, positions, layoutDirection, data, filteredData, filters, neighborhoodNodes, selectedNeighborhoodNodes, debouncedSaveGraphState, pushHistoryAndRefresh, setNodes]);
+    await simplifyFit({
+      nodes,
+      edges,
+      hiddenNodes,
+      layoutDirection,
+      positions,
+      setPositions,
+      setNodes,
+      pushHistoryAndRefresh,
+      filters,
+      neighborhoodNodes,
+      selectedNeighborhoodNodes,
+      debouncedSaveGraphState,
+      data,
+      filteredData,
+      fitView
+    });
+  }, [nodes, edges, hiddenNodes, layoutDirection, positions, setPositions, setNodes, pushHistoryAndRefresh, filters, neighborhoodNodes, selectedNeighborhoodNodes, debouncedSaveGraphState, data, filteredData, fitView]);
 
   // Handle node selection from search
   const handleNodeSearch = useCallback((nodeId: string) => {
@@ -1083,15 +1081,12 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
     setFilters(resetFilters); 
     setNeighborhoodNodes([]);
     setSelectedNeighborhoodNodes([]);
+    setCurrentNeighborhoodFilterNodeId(null);
     try { localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(resetFilters)); } catch { }
-    setTimeout(async () => {
+    setTimeout(() => {
       fitView({ duration: 800 });
-      // Wait for fitView animation to complete, then simplify
-      setTimeout(async () => {
-        await simplifyGraph();
-      }, 900); // Wait for fitView duration + buffer
     }, 200); // Give time for state updates
-  }, [filters, getStorageKey, setFilters, setNeighborhoodNodes, setSelectedNeighborhoodNodes, fitView, simplifyGraph]);
+  }, [filters, getStorageKey, setFilters, setNeighborhoodNodes, setSelectedNeighborhoodNodes, fitView]);
 
   // Undo handler
   const handleUndo = useCallback(async () => {
@@ -1104,6 +1099,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
       setPositions(entry.positions || {});
       setNeighborhoodNodes(entry.neighborhoodNodes || []);
       setSelectedNeighborhoodNodes(entry.selectedNeighborhoodNodes || []);
+      setCurrentNeighborhoodFilterNodeId(entry.currentNeighborhoodFilterNodeId || null);
       setNodes((prev) => prev.map((pn) => (
         entry.positions && entry.positions[pn.id]
           ? { ...pn, position: entry.positions[pn.id] }
@@ -1114,10 +1110,14 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
         localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(entry.filters || {}));
         localStorage.setItem(getStorageKey('graph_layout_direction'), entry.layoutDirection || 'TB');
       } catch { }
+      // After restoring, just fit to screen
+      setTimeout(() => {
+        try { fitView({ duration: 800 }); } catch { }
+      }, 200);
     } finally {
       refreshCanUndo();
     }
-  }, [fileKey, getStorageKey, setFilters, setLayoutDirection, setHiddenNodes, setPositions, setNeighborhoodNodes, setSelectedNeighborhoodNodes, setNodes, refreshCanUndo]);
+  }, [fileKey, getStorageKey, setFilters, setLayoutDirection, setHiddenNodes, setPositions, setNeighborhoodNodes, setSelectedNeighborhoodNodes, setNodes, refreshCanUndo, fitView]);
 
   // Redo handler
   const handleRedo = useCallback(async () => {
@@ -1130,6 +1130,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
       setPositions(entry.positions || {});
       setNeighborhoodNodes(entry.neighborhoodNodes || []);
       setSelectedNeighborhoodNodes(entry.selectedNeighborhoodNodes || []);
+      setCurrentNeighborhoodFilterNodeId(entry.currentNeighborhoodFilterNodeId || null);
       setNodes((prev) => prev.map((pn) => (
         entry.positions && entry.positions[pn.id]
           ? { ...pn, position: entry.positions[pn.id] }
@@ -1140,10 +1141,14 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
         localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(entry.filters || {}));
         localStorage.setItem(getStorageKey('graph_layout_direction'), entry.layoutDirection || 'TB');
       } catch { }
+      // After restoring, just fit to screen
+      setTimeout(() => {
+        try { fitView({ duration: 800 }); } catch { }
+      }, 200);
     } finally {
       refreshCanUndo();
     }
-  }, [fileKey, getStorageKey, setFilters, setLayoutDirection, setHiddenNodes, setPositions, setNeighborhoodNodes, setSelectedNeighborhoodNodes, setNodes, refreshCanUndo]);
+  }, [fileKey, getStorageKey, setFilters, setLayoutDirection, setHiddenNodes, setPositions, setNeighborhoodNodes, setSelectedNeighborhoodNodes, setNodes, refreshCanUndo, fitView]);
 
   return (
     <>
@@ -1366,6 +1371,11 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
                   
                   if (!vals || vals.length === 0) {
                     setNeighborhoodNodes([]);
+                    setCurrentNeighborhoodFilterNodeId(null);
+                    // After clearing neighborhood filter, just fit to screen
+                    setTimeout(() => {
+                      try { fitView({ duration: 800 }); } catch { }
+                    }, 200);
                   } else {
                     // Build complete neighborhood for all selected nodes
                     const completeNeighborhood = new Set<string>();
@@ -1383,14 +1393,12 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
                     });
                     
                     setNeighborhoodNodes(Array.from(completeNeighborhood));
+                    // Update the current filtered node ID (use first selected if multiple, null if multiple)
+                    setCurrentNeighborhoodFilterNodeId(vals.length === 1 ? vals[0] : null);
                   }
                   
-                  setTimeout(async () => {
+                  setTimeout(() => {
                     fitView({ duration: 800 });
-                    // Wait for fitView animation to complete, then simplify
-                    setTimeout(async () => {
-                      await simplifyGraph();
-                    }, 900); // Wait for fitView duration + buffer
                   }, 200); // Give time for state updates
                 }}
               />
@@ -1459,13 +1467,9 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
                     const fullSnapshot = { ...positions, ...liveNodePositions } as Record<string, { x: number; y: number }>;
                     try { saveGraphStateImmediate(fullSnapshot, hiddenNodes, data, filteredData); } catch { }
                     
-                    // Fit view and simplify graph after filter change
-                    setTimeout(async () => {
+                    // Fit view after filter change
+                    setTimeout(() => {
                       fitView({ duration: 800 });
-                      // Wait for fitView animation to complete, then simplify
-                      setTimeout(async () => {
-                        await simplifyGraph();
-                      }, 900); // Wait for fitView duration + buffer
                     }, 200); // Give time for state updates
                     
                     return newFilters;
@@ -1491,6 +1495,11 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
                   
                   if (!vals || vals.length === 0) {
                     setNeighborhoodNodes([]);
+                    setCurrentNeighborhoodFilterNodeId(null);
+                    // After clearing neighborhood filter, just fit to screen
+                    setTimeout(() => {
+                      try { fitView({ duration: 800 }); } catch { }
+                    }, 200);
                   } else {
                     // Build complete neighborhood for all selected nodes
                     const completeNeighborhood = new Set<string>();
@@ -1508,15 +1517,13 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
                     });
                     
                     setNeighborhoodNodes(Array.from(completeNeighborhood));
+                    // Update the current filtered node ID (use first selected if multiple, null if multiple)
+                    setCurrentNeighborhoodFilterNodeId(vals.length === 1 ? vals[0] : null);
                   }
                   
-                  // Fit view and simplify graph after neighborhood change
-                  setTimeout(async () => {
+                  // Fit view after neighborhood change
+                  setTimeout(() => {
                     fitView({ duration: 800 });
-                    // Wait for fitView animation to complete, then simplify
-                    setTimeout(async () => {
-                      await simplifyGraph();
-                    }, 900); // Wait for fitView duration + buffer
                   }, 200); // Give time for state updates
                 }}
               />
@@ -1568,7 +1575,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
               fontStyle: 'italic'
             }}
           >
-            💡 Tip: Right-click on any node to hide it from the graph
+            💡 Tip: Right-click on any node to filter its neighborhood (right-click again to reset)
           </Typography>
         </Box>
         <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
@@ -1647,6 +1654,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
                   setPositions(entry.positions || {});
                   setNeighborhoodNodes(entry.neighborhoodNodes || []);
                   setSelectedNeighborhoodNodes(entry.selectedNeighborhoodNodes || []);
+                  setCurrentNeighborhoodFilterNodeId(entry.currentNeighborhoodFilterNodeId || null);
                   setNodes((prev) => prev.map((pn) => (
                     entry.positions && entry.positions[pn.id]
                       ? { ...pn, position: entry.positions[pn.id] }
@@ -1671,6 +1679,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
                   setPositions(entry.positions || {});
                   setNeighborhoodNodes(entry.neighborhoodNodes || []);
                   setSelectedNeighborhoodNodes(entry.selectedNeighborhoodNodes || []);
+                  setCurrentNeighborhoodFilterNodeId(entry.currentNeighborhoodFilterNodeId || null);
                   setNodes((prev) => prev.map((pn) => (
                     entry.positions && entry.positions[pn.id]
                       ? { ...pn, position: entry.positions[pn.id] }
