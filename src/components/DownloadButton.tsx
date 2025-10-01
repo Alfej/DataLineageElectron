@@ -49,6 +49,7 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({
           if (node.classList?.contains('react-flow__panel')) return false;
           if (node.classList?.contains('react-flow__attribution')) return false;
           if (node.classList?.contains('react-flow__minimap')) return false;
+          if (node.classList?.contains('react-flow-controls-overlay')) return false;
           
           // Include everything else (nodes, edges, labels)
           return true;

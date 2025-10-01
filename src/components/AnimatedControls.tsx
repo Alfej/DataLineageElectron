@@ -65,7 +65,7 @@ const AnimatedControls: React.FC<AnimatedControlsProps> = ({ style, onResetFilte
   };
 
   return (
-    <ControlsContainer style={style}>
+    <ControlsContainer style={style} className="react-flow-controls-overlay">
       {onSimplify && (
         <ControlButton 
           onClick={onSimplify}

@@ -39,7 +39,6 @@ import TooltipContent from './graph/TooltipContent';
 import FourHandleNode from './FourHandleNode';
 import { useNavigate } from 'react-router-dom';
 import logo from '../assets/PepsiCoLogo.png';
-import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
 import SettingsBackupRestoreOutlinedIcon from '@mui/icons-material/SettingsBackupRestoreOutlined';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
@@ -49,6 +48,7 @@ import UndoOutlined from '@mui/icons-material/UndoOutlined';
 import RedoOutlined from '@mui/icons-material/RedoOutlined';
 import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
 import { pushHistory, undo as undoHistory, redo as redoHistory, canUndo as canUndoHistory, canRedo as canRedoHistory, ensureInitial, GraphHistoryEntry } from '../utils/history';
+import { exportToCSV, getVisibleTableData } from '../utils/exportCSV';
 
 // PepsiCo palette
 const PEPSI_BLUE = '#004B93';
@@ -228,6 +228,9 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
 
   // Control flag to prevent auto-simplify after undo/redo operations
   const [isUndoRedoOperation, setIsUndoRedoOperation] = useState<boolean>(false);
+  
+  // Control flag to track when filters are being reset
+  const [isResetOperation, setIsResetOperation] = useState<boolean>(false);
 
   // Pagination for the table
   const [page, setPage] = useState<number>(1);
@@ -693,6 +696,53 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
 
     return () => clearTimeout(timeoutId);
   }, [filters, neighborhoodNodes, selectedNeighborhoodNodes, currentNeighborhoodFilterNodeId]);
+
+  // Handle reset operation: simplify → fit → save after graph renders with cleared filters
+  useEffect(() => {
+    if (!isResetOperation || isAutoSimplifying || isUndoRedoOperation) {
+      return;
+    }
+
+    const timeoutId = setTimeout(async () => {
+      if (data.length > 0) {
+        try {
+          // Run simplify → fit → save sequence for reset
+          const result = await simplifyFit({
+            nodes,
+            edges,
+            hiddenNodes,
+            layoutDirection,
+            positions,
+            setPositions,
+            setNodes,
+            filters,
+            neighborhoodNodes,
+            selectedNeighborhoodNodes,
+            currentNeighborhoodFilterNodeId,
+            debouncedSaveGraphState,
+            data,
+            filteredData,
+            fitView,
+            fitViewOptions: { duration: 800 }
+          });
+          
+          if (!result.success) {
+            console.warn('Reset simplify failed:', result.message);
+          }
+        } catch (error) {
+          console.warn('Reset simplify error:', error);
+        } finally {
+          // Clear the reset flag
+          setIsResetOperation(false);
+        }
+      } else {
+        // If no data, just clear the flag
+        setIsResetOperation(false);
+      }
+    }, 300); // Give more time for the graph to render after filter reset
+
+    return () => clearTimeout(timeoutId);
+  }, [isResetOperation, isAutoSimplifying, isUndoRedoOperation, data, nodes, edges, hiddenNodes, layoutDirection, positions, setPositions, setNodes, filters, neighborhoodNodes, selectedNeighborhoodNodes, currentNeighborhoodFilterNodeId, debouncedSaveGraphState, filteredData, fitView, setIsResetOperation]);
 
   // 🔹 Filter options (dependent on other selections and neighborhood)
   const filterOptions = useMemo(() => {
@@ -1172,16 +1222,18 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
 
   // Handle reset filters
   const handleResetFilters = useCallback(async () => {
+    // Set reset flag to trigger simplify sequence after graph renders
+    setIsResetOperation(true);
+    
     const resetFilters = Object.fromEntries(Object.keys(filters).map(key => [key, []])); 
     setFilters(resetFilters); 
     setNeighborhoodNodes([]);
     setSelectedNeighborhoodNodes([]);
     setCurrentNeighborhoodFilterNodeId(null);
     try { localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(resetFilters)); } catch { }
-    setTimeout(() => {
-      fitView({ duration: 800 });
-    }, 200); // Give time for state updates
-  }, [filters, getStorageKey, setFilters, setNeighborhoodNodes, setSelectedNeighborhoodNodes, fitView]);
+    
+    // Skip graph state save and fit here - let the effect handle it after render
+  }, [filters, getStorageKey, setFilters, setNeighborhoodNodes, setSelectedNeighborhoodNodes, setIsResetOperation]);
 
   // Undo handler
   const handleUndo = useCallback(async () => {
@@ -1775,58 +1827,6 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
             </Box>
           </Box>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, alignItems: 'flex-end' }}>
-            <Box sx={{ display: 'flex', gap: 1 }}>
-              <Button variant="outlined" disabled={!canUndo} onClick={async () => {
-                try {
-                  const entry = await undoHistory(fileKey ?? null);
-                  if (!entry) return;
-                  setFilters(entry.filters || {});
-                  setLayoutDirection(entry.layoutDirection || 'TB');
-                  setHiddenNodes(new Set(entry.hidden || []));
-                  setPositions(entry.positions || {});
-                  setNeighborhoodNodes(entry.neighborhoodNodes || []);
-                  setSelectedNeighborhoodNodes(entry.selectedNeighborhoodNodes || []);
-                  setCurrentNeighborhoodFilterNodeId(entry.currentNeighborhoodFilterNodeId || null);
-                  setNodes((prev) => prev.map((pn) => (
-                    entry.positions && entry.positions[pn.id]
-                      ? { ...pn, position: entry.positions[pn.id] }
-                      : pn
-                  )));
-                  // Save the restored state to localStorage
-                  try {
-                    localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(entry.filters || {}));
-                    localStorage.setItem(getStorageKey('graph_layout_direction'), entry.layoutDirection || 'TB');
-                  } catch { }
-                } finally {
-                  refreshCanUndo();
-                }
-              }} sx={{ fontWeight: 'bold' }}>Undo</Button>
-              <Button variant="outlined" disabled={!canRedo} onClick={async () => {
-                try {
-                  const entry = await redoHistory(fileKey ?? null);
-                  if (!entry) return;
-                  setFilters(entry.filters || {});
-                  setLayoutDirection(entry.layoutDirection || 'TB');
-                  setHiddenNodes(new Set(entry.hidden || []));
-                  setPositions(entry.positions || {});
-                  setNeighborhoodNodes(entry.neighborhoodNodes || []);
-                  setSelectedNeighborhoodNodes(entry.selectedNeighborhoodNodes || []);
-                  setCurrentNeighborhoodFilterNodeId(entry.currentNeighborhoodFilterNodeId || null);
-                  setNodes((prev) => prev.map((pn) => (
-                    entry.positions && entry.positions[pn.id]
-                      ? { ...pn, position: entry.positions[pn.id] }
-                      : pn
-                  )));
-                  // Save the restored state to localStorage
-                  try {
-                    localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(entry.filters || {}));
-                    localStorage.setItem(getStorageKey('graph_layout_direction'), entry.layoutDirection || 'TB');
-                  } catch { }
-                } finally {
-                  refreshCanUndo();
-                }
-              }} sx={{ fontWeight: 'bold' }}>Redo</Button>
-            </Box>
             <LayoutDirection
               value={layoutDirection}
               onChange={(d) => setLayoutDirection(d)}
@@ -1936,7 +1936,37 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
         boxShadow: 3,
         p: 3
       }}>
-        <Typography variant="h6" sx={{ mb: 3, color: "#1976d2" }}>Visible Nodes Relationships</Typography>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+          <Box>
+            <Typography variant="h6" sx={{ color: "#1976d2" }}>Visible Nodes Relationships</Typography>
+            <Typography variant="body2" sx={{ color: '#666', mt: 0.5 }}>
+              {(() => {
+                const visibleCount = filteredData.filter(row => !hiddenNodes.has(row.parentTableName) && !hiddenNodes.has(row.childTableName)).length;
+                return `${visibleCount} visible relationships`;
+              })()}
+            </Typography>
+          </Box>
+          <Button
+            variant="contained"
+            onClick={() => {
+              const visibleData = getVisibleTableData(filteredData, hiddenNodes);
+              const filename = fileKey ? `table-data-${fileKey}` : 'table-data';
+              exportToCSV(visibleData, filename);
+            }}
+            sx={{ 
+              fontWeight: 'bold', 
+              backgroundColor: '#4CAF50', 
+              '&:hover': { backgroundColor: '#388e3c' },
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1
+            }}
+            disabled={filteredData.filter(row => !hiddenNodes.has(row.parentTableName) && !hiddenNodes.has(row.childTableName)).length === 0}
+          >
+            <DownloadOutlinedIcon fontSize="small" />
+            Download CSV
+          </Button>
+        </Box>
         <Box sx={{
           border: 1,
           borderColor: 'divider',
@@ -1951,8 +1981,6 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
                 <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Relationship</TableCell>
                 <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Child Node</TableCell>
                 <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Child Type</TableCell>
-                <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Client ID</TableCell>
-                <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>App ID</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -1972,8 +2000,6 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
                     <TableCell>{row.relationship}</TableCell>
                     <TableCell>{row.childTableName}</TableCell>
                     <TableCell>{row.childTableType}</TableCell>
-                    <TableCell>{row.ClientID}</TableCell>
-                    <TableCell>{row.AppID}</TableCell>
                   </TableRow>
                 ));
               })()}
