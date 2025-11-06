@@ -6,16 +6,16 @@ function FourHandleNode({ data }: any) {
       {data?.label}
 
       {/* target handles (ids match position names so edges can reference 'top'|'left'|'right'|'bottom') */}
-      <Handle id="top" type="target" position={Position.Top} style={{ background: '#555' }} />
-      <Handle id="left" type="target" position={Position.Left} style={{ background: '#555' }} />
-      <Handle id="right" type="target" position={Position.Right} style={{ background: '#555' }} />
-      <Handle id="bottom" type="target" position={Position.Bottom} style={{ background: '#555' }} />
+      <Handle id="top" type="target" position={Position.Top} style={{ width: 0, height: 0, opacity: 0, background: 'transparent', border: 'none', pointerEvents: 'none' }} />
+      <Handle id="left" type="target" position={Position.Left} style={{ width: 0, height: 0, opacity: 0, background: 'transparent', border: 'none', pointerEvents: 'none' }} />
+      <Handle id="right" type="target" position={Position.Right} style={{ width: 0, height: 0, opacity: 0, background: 'transparent', border: 'none', pointerEvents: 'none' }} />
+      <Handle id="bottom" type="target" position={Position.Bottom} style={{ width: 0, height: 0, opacity: 0, background: 'transparent', border: 'none', pointerEvents: 'none' }} />
 
       {/* source handles */}
-      <Handle id="top" type="source" position={Position.Top} style={{ background: '#555' }} />
-      <Handle id="left" type="source" position={Position.Left} style={{ background: '#555' }} />
-      <Handle id="right" type="source" position={Position.Right} style={{ background: '#555' }} />
-      <Handle id="bottom" type="source" position={Position.Bottom} style={{ background: '#555' }} />
+      <Handle id="top" type="source" position={Position.Top} style={{ width: 0, height: 0, opacity: 0, background: 'transparent', border: 'none', pointerEvents: 'none' }} />
+      <Handle id="left" type="source" position={Position.Left} style={{ width: 0, height: 0, opacity: 0, background: 'transparent', border: 'none', pointerEvents: 'none' }} />
+      <Handle id="right" type="source" position={Position.Right} style={{ width: 0, height: 0, opacity: 0, background: 'transparent', border: 'none', pointerEvents: 'none' }} />
+      <Handle id="bottom" type="source" position={Position.Bottom} style={{ width: 0, height: 0, opacity: 0, background: 'transparent', border: 'none', pointerEvents: 'none' }} />
     </div>
   );
 }

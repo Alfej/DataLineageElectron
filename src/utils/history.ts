@@ -10,6 +10,7 @@ export type GraphHistoryEntry = {
   neighborhoodNodes: string[];
   selectedNeighborhoodNodes?: string[]; // User's original selection before expansion
   currentNeighborhoodFilterNodeId?: string | null; // Track the node that triggered neighborhood filter for toggle functionality
+  hierarchyLevel?: string; // Track selected hierarchy level (Sector, Application, etc.)
   timestamp: number;
   _sig?: string; // internal hash signature for dedupe
 };
@@ -91,7 +92,7 @@ export async function pushHistory(
     const filterSig = Object.keys(e.filters).sort().map(k => `${k}:${(e.filters[k]||[]).sort().join(';')}`).join(',');
     const neighborhoodSig = (e.neighborhoodNodes || []).sort().join(',');
     const selectedNeighborhoodSig = (e.selectedNeighborhoodNodes || []).sort().join(';');
-    return `${posKeys.length}|${hiddenSize}|${filterSig}|${e.layoutDirection}|${neighborhoodSig}|${selectedNeighborhoodSig}|${e.currentNeighborhoodFilterNodeId || ''}|${head}`;
+    return `${posKeys.length}|${hiddenSize}|${filterSig}|${e.layoutDirection}|${e.hierarchyLevel || ''}|${neighborhoodSig}|${selectedNeighborhoodSig}|${e.currentNeighborhoodFilterNodeId || ''}|${head}`;
   };
   entry._sig = buildSig(entry);
 

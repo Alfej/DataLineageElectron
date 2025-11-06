@@ -16,6 +16,55 @@ const directionToElk: Record<string, string> = {
   RL: 'LEFT',
 };
 
+// Helper function to find connected components
+const findConnectedComponents = (nodes: Node[], edges: any[]): Node[][] => {
+  const nodeMap = new Map<string, Node>();
+  nodes.forEach(node => nodeMap.set(node.id, node));
+  
+  const adjacencyList = new Map<string, Set<string>>();
+  nodes.forEach(node => adjacencyList.set(node.id, new Set()));
+  
+  // Build adjacency list
+  edges.forEach(edge => {
+    const source = edge.source;
+    const target = edge.target;
+    if (adjacencyList.has(source) && adjacencyList.has(target)) {
+      adjacencyList.get(source)!.add(target);
+      adjacencyList.get(target)!.add(source);
+    }
+  });
+  
+  const visited = new Set<string>();
+  const components: Node[][] = [];
+  
+  const dfs = (nodeId: string, component: Node[]) => {
+    if (visited.has(nodeId)) return;
+    visited.add(nodeId);
+    
+    const node = nodeMap.get(nodeId);
+    if (node) component.push(node);
+    
+    const neighbors = adjacencyList.get(nodeId) || new Set();
+    neighbors.forEach(neighbor => {
+      if (!visited.has(neighbor)) {
+        dfs(neighbor, component);
+      }
+    });
+  };
+  
+  nodes.forEach(node => {
+    if (!visited.has(node.id)) {
+      const component: Node[] = [];
+      dfs(node.id, component);
+      if (component.length > 0) {
+        components.push(component);
+      }
+    }
+  });
+  
+  return components;
+};
+
 // direction: 'TB' | 'BT' | 'LR' | 'RL'
 // nodeHeights: optional map of node ID to height
 export const getLayoutedElements = async (
@@ -25,17 +74,32 @@ export const getLayoutedElements = async (
   nodeHeights?: Record<string, number>
 ) => {
   const elkDirection = directionToElk[direction] || 'DOWN';
-
+  
+  // Find connected components for better handling of disconnected nodes
+  const components = findConnectedComponents(nodes, edges);
+  
+  // If we have multiple disconnected components, layout them separately
+  if (components.length > 1) {
+    return await layoutDisconnectedComponents(components, edges, direction, nodeHeights);
+  }
+  
+  // Single component or all nodes connected - use standard layout
   const graph = {
     id: 'root',
     layoutOptions: {
       'elk.algorithm': 'layered',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '80',
-      'elk.spacing.nodeNode': '50',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '100',
+      'elk.spacing.nodeNode': '60',
+      'elk.spacing.componentComponent': '80',
       'elk.direction': elkDirection,
-      // Additional options to handle varying node heights
+      // Improved options for better layout quality
       'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
-      'elk.layered.unnecessaryBendpoints': 'true',
+      'elk.layered.unnecessaryBendpoints': 'false',
+      'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+      'elk.layered.cycleBreaking.strategy': 'DEPTH_FIRST',
+      'elk.separateConnectedComponents': 'true',
+      'elk.spacing.portPort': '10',
+      'elk.portConstraints': 'FIXED_SIDE',
     },
     children: nodes.map((n) => ({
       id: n.id,
@@ -79,6 +143,117 @@ export const getLayoutedElements = async (
   });
 
   return { nodes: positionedNodes, edges };
+};
+
+// Layout disconnected components separately and arrange them in a grid
+const layoutDisconnectedComponents = async (
+  components: Node[][],
+  edges: any[],
+  direction: string,
+  nodeHeights?: Record<string, number>
+): Promise<{ nodes: Node[], edges: any[] }> => {
+  const elkDirection = directionToElk[direction] || 'DOWN';
+  const isHorizontal = direction === 'LR' || direction === 'RL';
+  
+  const layoutPromises = components.map(async (component, index) => {
+    const componentNodeIds = new Set(component.map(n => n.id));
+    const componentEdges = edges.filter(e => 
+      componentNodeIds.has(e.source) && componentNodeIds.has(e.target)
+    );
+    
+    const graph = {
+      id: `component-${index}`,
+      layoutOptions: {
+        'elk.algorithm': 'layered',
+        'elk.layered.spacing.nodeNodeBetweenLayers': '80',
+        'elk.spacing.nodeNode': '50',
+        'elk.direction': elkDirection,
+        'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
+        'elk.layered.unnecessaryBendpoints': 'false',
+        'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+        'elk.layered.cycleBreaking.strategy': 'DEPTH_FIRST',
+        'elk.spacing.portPort': '10',
+        'elk.portConstraints': 'FIXED_SIDE',
+      },
+      children: component.map((n) => ({
+        id: n.id,
+        width: nodeWidth,
+        height: nodeHeights?.[n.id] || defaultNodeHeight,
+      })),
+      edges: componentEdges.map((e) => ({ 
+        id: e.id || `${e.source}__${e.target}`, 
+        sources: [e.source], 
+        targets: [e.target] 
+      })),
+    };
+    
+    try {
+      const layouted = await elk.layout(graph);
+      return {
+        component,
+        layouted,
+        width: ((layouted as any).width || 0) + 100, // Add padding
+        height: ((layouted as any).height || 0) + 100, // Add padding
+      };
+    } catch (err) {
+      console.warn(`ELK layout failed for component ${index}`, err);
+      return {
+        component,
+        layouted: { children: component.map(n => ({ id: n.id, x: 0, y: 0 })) },
+        width: nodeWidth + 100,
+        height: (component.length * (defaultNodeHeight + 20)) + 100,
+      };
+    }
+  });
+  
+  const layoutedComponents = await Promise.all(layoutPromises);
+  
+  // Sort components by size (largest first) for better arrangement
+  layoutedComponents.sort((a, b) => (b.width * b.height) - (a.width * a.height));
+  
+  // Arrange components in a grid pattern
+  let currentX = 0;
+  let currentY = 0;
+  let maxHeightInRow = 0;
+  const maxRowWidth = isHorizontal ? 2000 : 1500; // Adjust based on direction
+  
+  const allPositionedNodes: Node[] = [];
+  
+  layoutedComponents.forEach(({ component, layouted, width, height }) => {
+    // Check if we need to start a new row
+    if (currentX + width > maxRowWidth && currentX > 0) {
+      currentX = 0;
+      currentY += maxHeightInRow + 150; // Row spacing
+      maxHeightInRow = 0;
+    }
+    
+    maxHeightInRow = Math.max(maxHeightInRow, height);
+    
+    // Position nodes in this component
+    component.forEach(node => {
+      const children = (layouted as any).children || [];
+      const gNode = children.find((c: any) => c.id === node.id) || { x: 0, y: 0 };
+      const px = currentX + (typeof gNode.x === 'number' ? gNode.x : 0) + 50; // Add padding
+      const py = currentY + (typeof gNode.y === 'number' ? gNode.y : 0) + 50; // Add padding
+      
+      const nodeHeight = nodeHeights?.[node.id] || defaultNodeHeight;
+      
+      allPositionedNodes.push({
+        ...node,
+        position: { x: px, y: py },
+        style: {
+          ...node.style,
+          width: nodeWidth,
+          height: nodeHeight,
+          minHeight: nodeHeight,
+        }
+      });
+    });
+    
+    currentX += width + 100; // Component spacing
+  });
+  
+  return { nodes: allPositionedNodes, edges };
 };
 
 export default getLayoutedElements;

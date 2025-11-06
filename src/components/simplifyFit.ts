@@ -31,7 +31,7 @@ interface SimplifyFitParams {
   delay?: number;
 }
 
-// Performs Dagre layout on currently visible nodes, updates positions, optionally records history and fits view
+// Performs ELK layout on currently visible nodes, updates positions, optionally records history and fits view
 export async function simplifyFit(params: SimplifyFitParams): Promise<{ success: boolean; message?: string }> {
   const { 
     nodes, 
@@ -95,7 +95,7 @@ export async function simplifyFit(params: SimplifyFitParams): Promise<{ success:
       return { success: false, message: 'No visible nodes to layout' };
     }
 
-    // Get layouted elements using Dagre
+    // Get layouted elements using ELK
     const layouted = await getLayoutedElements(visibleNodes, visibleEdges, layoutDirection);
     
     // Create new positions object - preserve existing positions for all nodes
@@ -140,6 +140,7 @@ export async function simplifyFit(params: SimplifyFitParams): Promise<{ success:
           neighborhoodNodes: [...neighborhoodNodes],
           selectedNeighborhoodNodes: [...selectedNeighborhoodNodes],
           currentNeighborhoodFilterNodeId,
+          // Note: hierarchyLevel is not known here; caller should augment via makeSnapshot or extend params if needed.
           timestamp: Date.now()
         });
       } catch (error) {

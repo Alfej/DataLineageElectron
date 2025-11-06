@@ -37,6 +37,7 @@ import SearchNode from './SearchNode';
 import AnimatedControls from './AnimatedControls';
 import TooltipContent from './graph/TooltipContent';
 import FourHandleNode from './FourHandleNode';
+import SelfLoopEdge from './SelfLoopEdge';
 import { useNavigate } from 'react-router-dom';
 import logo from '../assets/PepsiCoLogo.png';
 import SettingsBackupRestoreOutlinedIcon from '@mui/icons-material/SettingsBackupRestoreOutlined';
@@ -49,6 +50,7 @@ import RedoOutlined from '@mui/icons-material/RedoOutlined';
 import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
 import { pushHistory, undo as undoHistory, redo as redoHistory, canUndo as canUndoHistory, canRedo as canRedoHistory, ensureInitial, GraphHistoryEntry } from '../utils/history';
 import { exportToCSV, getVisibleTableData } from '../utils/exportCSV';
+import { HierarchyLevel } from '../utils/hierarchyTransform';
 
 // PepsiCo palette
 const PEPSI_BLUE = '#004B93';
@@ -58,7 +60,7 @@ const PEPSI_BG_LIGHT = '#EAF3FF';
 // GraphModel provides traversal utilities for the data
 // TooltipContent renders node tooltip details
 
-const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | null }) => {
+const GraphInner = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: { data: TableRelation[]; fileKey?: string | null; hierarchyLevel?: HierarchyLevel; onHierarchyLevelChange?: (lvl: HierarchyLevel) => void; }) => {
   const { fitView } = useReactFlow();
   const getStorageKey = (base: string) => (fileKey ? `${base}::${fileKey}` : base);
   const nodeWidth = 180;
@@ -217,7 +219,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
   
   // Fullscreen state for expanded graph view
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
-  const [isAnimating, setIsAnimating] = useState<boolean>(false);
+  const [_isAnimating, setIsAnimating] = useState<boolean>(false);
   // Force refresh key for ReactFlow instances to prevent conflicts
   const [refreshKey, setRefreshKey] = useState<number>(0);
   // Highlighted node from search
@@ -229,6 +231,9 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
   // Control flag to prevent auto-simplify after undo/redo operations
   const [isUndoRedoOperation, setIsUndoRedoOperation] = useState<boolean>(false);
   
+  // Control flag to track hierarchy level changes
+  const [isHierarchyChange, setIsHierarchyChange] = useState<boolean>(false);
+
   // Control flag to track when filters are being reset
   const [isResetOperation, setIsResetOperation] = useState<boolean>(false);
 
@@ -299,9 +304,10 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
       neighborhoodNodes: [...neighborhoodNodes],
       selectedNeighborhoodNodes: [...selectedNeighborhoodNodes],
       currentNeighborhoodFilterNodeId,
+      hierarchyLevel: hierarchyLevel || 'Sector',
       timestamp: Date.now(),
     };
-  }, [nodes, positions, hiddenNodes, filters, layoutDirection, neighborhoodNodes, selectedNeighborhoodNodes, currentNeighborhoodFilterNodeId]);
+  }, [nodes, positions, hiddenNodes, filters, layoutDirection, neighborhoodNodes, selectedNeighborhoodNodes, currentNeighborhoodFilterNodeId, hierarchyLevel]);
   const resetHiddenNodes = async () => {
     try {
       const stored = localStorage.getItem(getStorageKey("graph_node_state"));
@@ -461,7 +467,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
     }
   }, [data, positions, fileKey, makeSnapshot, refreshCanUndo]);
 
-  // 🔹 Restore positions and hidden nodes from localStorage on mount, else use Dagre
+  // 🔹 Restore positions and hidden nodes from localStorage on mount, else use ELK
   useEffect(() => {
     try {
       const stored = localStorage.getItem(getStorageKey("graph_node_state"));
@@ -481,7 +487,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
       }
     } catch { }
 
-    // If no localStorage, use Dagre for accurate layout
+    // If no localStorage, use ELK for accurate layout
     if (data && data.length > 0) {
       const nodeMap: Record<string, boolean> = {};
       const createdNodes: any[] = [];
@@ -513,22 +519,34 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
             style: { padding: 10, borderRadius: '8px', border: '1px solid #999', background: getColorFor('table', row.childTableType) || '#fff' },
           });
         }
-        createdEdges.push({
-          id: `e-${parent}-${child}-${index}`,
-          source: parent,
-          target: child,
-          label: relationship,
-          style: { strokeWidth: 2, stroke: getColorFor('relationship', relationship) || '#444' },
-          labelStyle: { fill: '#333', fontWeight: 600, fontSize: 12 },
-          labelBgStyle: { 
-            fill: "#ffffff", 
-            fillOpacity: 0.9,
-            rx: 12, // rounded corners
-            ry: 12  // rounded corners
-          },
-          labelBgPadding: [8, 12], // [vertical, horizontal] padding
-          markerEnd: { type: MarkerType.ArrowClosed, width: 20, height: 20, color: getColorFor('relationship', relationship) || '#444' },
-        });
+        if (parent === child) {
+          createdEdges.push({
+            id: `self-${parent}-${index}`,
+            type: 'selfLoop',
+            source: parent,
+            target: child,
+            label: relationship,
+            style: { strokeWidth: 2, stroke: getColorFor('relationship', relationship) || '#444' },
+            markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: getColorFor('relationship', relationship) || '#444' },
+          });
+        } else {
+          createdEdges.push({
+            id: `e-${parent}-${child}-${index}`,
+            source: parent,
+            target: child,
+            label: relationship,
+            style: { strokeWidth: 2, stroke: getColorFor('relationship', relationship) || '#444' },
+            labelStyle: { fill: '#333', fontWeight: 600, fontSize: 12 },
+            labelBgStyle: { 
+              fill: "#ffffff", 
+              fillOpacity: 0.9,
+              rx: 12, // rounded corners
+              ry: 12  // rounded corners
+            },
+            labelBgPadding: [8, 12], // [vertical, horizontal] padding
+            markerEnd: { type: MarkerType.ArrowClosed, width: 20, height: 20, color: getColorFor('relationship', relationship) || '#444' },
+          });
+        }
       });
 
       (async () => {
@@ -696,6 +714,54 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
 
     return () => clearTimeout(timeoutId);
   }, [filters, neighborhoodNodes, selectedNeighborhoodNodes, currentNeighborhoodFilterNodeId]);
+
+  // Handle hierarchy level change: simplify → fit → save after new data is received
+  useEffect(() => {
+    if (!isHierarchyChange || isAutoSimplifying || isUndoRedoOperation) {
+      return;
+    }
+
+    const timeoutId = setTimeout(async () => {
+      if (data.length > 0) {
+        try {
+          // Run simplify → fit → save sequence for hierarchy change
+          const result = await simplifyFit({
+            nodes,
+            edges,
+            hiddenNodes,
+            layoutDirection,
+            positions,
+            setPositions,
+            setNodes,
+            pushHistoryAndRefresh,
+            filters,
+            neighborhoodNodes,
+            selectedNeighborhoodNodes,
+            currentNeighborhoodFilterNodeId,
+            debouncedSaveGraphState,
+            data,
+            filteredData,
+            fitView,
+            fitViewOptions: { duration: 800 }
+          });
+          
+          if (!result.success) {
+            console.warn('Hierarchy change simplify failed:', result.message);
+          }
+        } catch (error) {
+          console.warn('Hierarchy change simplify error:', error);
+        } finally {
+          // Clear the hierarchy change flag
+          setIsHierarchyChange(false);
+        }
+      } else {
+        // If no data, just clear the flag
+        setIsHierarchyChange(false);
+      }
+    }, 300); // Give time for the new data to render
+
+    return () => clearTimeout(timeoutId);
+  }, [isHierarchyChange, isAutoSimplifying, isUndoRedoOperation, data, nodes, edges, hiddenNodes, layoutDirection, positions, setPositions, setNodes, filters, neighborhoodNodes, selectedNeighborhoodNodes, currentNeighborhoodFilterNodeId, debouncedSaveGraphState, filteredData, fitView, setIsHierarchyChange]);
 
   // Handle reset operation: simplify → fit → save after graph renders with cleared filters
   useEffect(() => {
@@ -950,43 +1016,55 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
 
       // Create edges with proper handle positioning based on dynamic heights
       if (!hiddenNodes.has(parent) && !hiddenNodes.has(child)) {
-        const parentPos = createdNodes.find(n => n.id === parent)?.position || positions[parent];
-        const childPos = createdNodes.find(n => n.id === child)?.position || positions[child];
-        const parentCenter = parentPos ? {
-          x: parentPos.x + nodeWidth / 2,
-          y: parentPos.y / 2
-        } : { x: 0, y: 0 };
-        const childCenter = childPos ? {
-          x: childPos.x + nodeWidth / 2,
-          y: childPos.y  / 2
-        } : { x: 0, y: 0 };
+        if (parent === child) {
+          createdEdges.push({
+            id: `self-${parent}-${index}`,
+            type: 'selfLoop',
+            source: parent,
+            target: child,
+            label: relationship,
+            style: { strokeWidth: 2, stroke: getColorFor('relationship', relationship) || "#444" },
+            markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: getColorFor('relationship', relationship) || "#444" },
+          });
+        } else {
+          const parentPos = createdNodes.find(n => n.id === parent)?.position || positions[parent];
+          const childPos = createdNodes.find(n => n.id === child)?.position || positions[child];
+          const parentCenter = parentPos ? {
+            x: parentPos.x + nodeWidth / 2,
+            y: parentPos.y / 2
+          } : { x: 0, y: 0 };
+          const childCenter = childPos ? {
+            x: childPos.x + nodeWidth / 2,
+            y: childPos.y  / 2
+          } : { x: 0, y: 0 };
 
-        const sourceHandle = getClosestHandle({ ...parentPos, id: parent }, childCenter);
-        const targetHandle = getClosestHandle({ ...childPos, id: child }, parentCenter);
+          const sourceHandle = getClosestHandle({ ...parentPos, id: parent }, childCenter);
+          const targetHandle = getClosestHandle({ ...childPos, id: child }, parentCenter);
 
-        createdEdges.push({
-          id: `e-${parent}-${child}-${index}`,
-          source: parent,
-          target: child,
-          sourceHandle,
-          targetHandle,
-          label: relationship,
-          style: { strokeWidth: 2, stroke: getColorFor('relationship', relationship) || "#444" },
-          labelStyle: { fill: "#333", fontWeight: 600, fontSize: 12 },
-          labelBgStyle: { 
-            fill: "#ffffff", 
-            fillOpacity: 0.9,
-            rx: 12, // rounded corners
-            ry: 12  // rounded corners
-          },
-          labelBgPadding: [8, 12], // [vertical, horizontal] padding
-          markerEnd: {
-            type: MarkerType.ArrowClosed,
-            width: 20,
-            height: 20,
-            color: getColorFor('relationship', relationship) || "#444",
-          },
-        });
+          createdEdges.push({
+            id: `e-${parent}-${child}-${index}`,
+            source: parent,
+            target: child,
+            sourceHandle,
+            targetHandle,
+            label: relationship,
+            style: { strokeWidth: 2, stroke: getColorFor('relationship', relationship) || "#444" },
+            labelStyle: { fill: "#333", fontWeight: 600, fontSize: 12 },
+            labelBgStyle: { 
+              fill: "#ffffff", 
+              fillOpacity: 0.9,
+              rx: 12, // rounded corners
+              ry: 12  // rounded corners
+            },
+            labelBgPadding: [8, 12], // [vertical, horizontal] padding
+            markerEnd: {
+              type: MarkerType.ArrowClosed,
+              width: 20,
+              height: 20,
+              color: getColorFor('relationship', relationship) || "#444",
+            },
+          });
+        }
       }
     });
 
@@ -1183,6 +1261,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
 
   // Memoize nodeTypes to avoid recreating the object on every render (prevents React Flow warnings)
   const nodeTypesMemo = useMemo(() => ({ fourHandle: FourHandleNode }), []);
+  const edgeTypesMemo = useMemo(() => ({ selfLoop: SelfLoopEdge }), []);
 
   // Manual simplify + fit graph using external utility (for button clicks)
   const simplifyGraph = useCallback(async () => {
@@ -1239,6 +1318,8 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
   const handleUndo = useCallback(async () => {
     // Set flag to prevent auto-simplify during and after undo
     setIsUndoRedoOperation(true);
+    // Clear hierarchy change flag to prevent conflicts
+    setIsHierarchyChange(false);
     
     try {
       const entry = await undoHistory(fileKey ?? null);
@@ -1255,6 +1336,10 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
           ? { ...pn, position: entry.positions[pn.id] }
           : pn
       )));
+      // Restore hierarchy level (propagate to parent via callback)
+      if (onHierarchyLevelChange && entry.hierarchyLevel) {
+        onHierarchyLevelChange(entry.hierarchyLevel as HierarchyLevel);
+      }
       // Save the restored state to localStorage
       try {
         localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(entry.filters || {}));
@@ -1269,12 +1354,14 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
     } finally {
       refreshCanUndo();
     }
-  }, [fileKey, getStorageKey, setFilters, setLayoutDirection, setHiddenNodes, setPositions, setNeighborhoodNodes, setSelectedNeighborhoodNodes, setNodes, refreshCanUndo, fitView, setIsUndoRedoOperation]);
+  }, [fileKey, getStorageKey, setFilters, setLayoutDirection, setHiddenNodes, setPositions, setNeighborhoodNodes, setSelectedNeighborhoodNodes, setNodes, refreshCanUndo, fitView, setIsUndoRedoOperation, setIsHierarchyChange]);
 
   // Redo handler
   const handleRedo = useCallback(async () => {
     // Set flag to prevent auto-simplify during and after redo
     setIsUndoRedoOperation(true);
+    // Clear hierarchy change flag to prevent conflicts
+    setIsHierarchyChange(false);
     
     try {
       const entry = await redoHistory(fileKey ?? null);
@@ -1291,6 +1378,10 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
           ? { ...pn, position: entry.positions[pn.id] }
           : pn
       )));
+      // Restore hierarchy level (propagate to parent via callback)
+      if (onHierarchyLevelChange && entry.hierarchyLevel) {
+        onHierarchyLevelChange(entry.hierarchyLevel as HierarchyLevel);
+      }
       // Save the restored state to localStorage
       try {
         localStorage.setItem(getStorageKey('current_Filters_state'), JSON.stringify(entry.filters || {}));
@@ -1305,7 +1396,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
     } finally {
       refreshCanUndo();
     }
-  }, [fileKey, getStorageKey, setFilters, setLayoutDirection, setHiddenNodes, setPositions, setNeighborhoodNodes, setSelectedNeighborhoodNodes, setNodes, refreshCanUndo, fitView, setIsUndoRedoOperation]);
+  }, [fileKey, getStorageKey, setFilters, setLayoutDirection, setHiddenNodes, setPositions, setNeighborhoodNodes, setSelectedNeighborhoodNodes, setNodes, refreshCanUndo, fitView, setIsUndoRedoOperation, setIsHierarchyChange]);
 
   return (
     <>
@@ -1575,6 +1666,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
             key="fullscreen-reactflow"
             nodes={visualNodes}
             edges={visualEdges}
+            edgeTypes={edgeTypesMemo}
             onNodesChange={handleNodesChange}
             onNodeDragStop={nodeManualOps.onNodeDragStop}
             onEdgesChange={onEdgesChange}
@@ -1921,6 +2013,30 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
               hiddenNodes={hiddenNodes}
               onNodeSelect={handleNodeSearch}
             />
+            {onHierarchyLevelChange && (
+              <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                <Typography variant="body2" sx={{ color: '#333' }}>Hierarchy</Typography>
+                <Select
+                  size="small"
+                  value={hierarchyLevel || 'Sector'}
+                  onChange={async (e) => {
+                    const lvl = e.target.value as HierarchyLevel;
+                    onHierarchyLevelChange(lvl);
+                    // Set flag to trigger simplify sequence after new data is received
+                    setIsHierarchyChange(true);
+                  }}
+                >
+                  <MenuItem value="Sector">Sector</MenuItem>
+                  <MenuItem value="Application">Application</MenuItem>
+                  <MenuItem value="Purpose">Purpose</MenuItem>
+                  <MenuItem value="Client">Client</MenuItem>
+                  <MenuItem value="Tool">Tool</MenuItem>
+                  <MenuItem value="System">System</MenuItem>
+                  <MenuItem value="Schema">Schema</MenuItem>
+                  <MenuItem value="ObjectName">Object Name</MenuItem>
+                </Select>
+              </Box>
+            )}
           </Panel>
         </ReactFlow>
       </Box>
@@ -2028,9 +2144,9 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
   );
 };
 
-const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | null }) => (
+const Graph = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: { data: TableRelation[]; fileKey?: string | null; hierarchyLevel?: any; onHierarchyLevelChange?: (lvl: any) => void; }) => (
   <ReactFlowProvider>
-    <GraphInner data={data} fileKey={fileKey} />
+    <GraphInner data={data} fileKey={fileKey} hierarchyLevel={hierarchyLevel} onHierarchyLevelChange={onHierarchyLevelChange} />
   </ReactFlowProvider>
 );
 
