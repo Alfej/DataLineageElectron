@@ -1,45 +1,70 @@
 import React from 'react';
-import { Box, Button, Typography, List, ListItem, ListItemText, ListItemButton } from '@mui/material';
+import { Box, Button, Typography, List, ListItem, ListItemText, ListItemButton, CircularProgress } from '@mui/material';
 import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
 import { useNavigate } from 'react-router-dom';
 import { parseCsvFile } from '../utils/parseCSV';
+import { buildHierarchicalStructure } from '../utils/hierarchicalParser';
+import { saveHierarchicalData, getStoredFiles, generateFileKey } from '../utils/hierarchicalStorage';
+import { getStructureStats } from '../utils/hierarchicalParser';
 import logo from '../assets/PepsiCoLogo.png';
 import bg from '../assets/PepsiCoBG.png';
 
 export default function Landing() {
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const navigate = useNavigate();
-  const [savedFiles, setSavedFiles] = React.useState<{ key: string; name: string }[]>([]);
+  const [savedFiles, setSavedFiles] = React.useState<{ key: string; name: string; uploadedAt?: number }[]>([]);
   const [selectedFile, setSelectedFile] = React.useState<File | null>(null);
   const [selectedName, setSelectedName] = React.useState<string>('');
+  const [isProcessing, setIsProcessing] = React.useState<boolean>(false);
 
   React.useEffect(() => {
-    // Scan localStorage for keys that match graph_node_state::{fileKey} or current_Filters_state::{fileKey}
-    const files: { key: string; name: string }[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i) as string;
-      if (!k) continue;
-      // Expect pattern: <base>::<fileKey> or base::fileKey
-      const parts = k.split('::');
-      if (parts.length >= 2) {
-        const fileKey = parts.slice(1).join('::');
-        // we only want unique fileKeys
-        if (!files.find(f => f.key === fileKey)) {
-          files.push({ key: fileKey, name: fileKey.split('::')[0] });
-        }
-      }
-    }
-    setSavedFiles(files);
+    // Load stored files using new hierarchical storage system
+    const files = getStoredFiles();
+    setSavedFiles(files.map(f => ({
+      key: f.key,
+      name: f.fileName,
+      uploadedAt: new Date(f.uploadedAt).getTime()
+    })));
   }, []);
 
   const handleUpload = async (file: File) => {
-    const parsed = (await parseCsvFile(file)) as any[];
-    const key = `${file.name}::${file.size}::${file.lastModified}`;
-    // save parsed CSV into localStorage under a file-scoped key so GraphPage can load it
+    setIsProcessing(true);
     try {
-      localStorage.setItem(`uploaded_csv::${key}`, JSON.stringify(parsed));
-    } catch {}
-    navigate(`/Graph/${encodeURIComponent(key)}`);
+      // Parse CSV file
+      const parsed = (await parseCsvFile(file)) as Record<string, unknown>[];
+      
+      // Build hierarchical structure
+      const structure = buildHierarchicalStructure(parsed);
+      
+      // Get statistics
+      const stats = getStructureStats(structure);
+      console.log('📊 Hierarchical structure stats:', stats);
+      
+      // Generate file key
+      const fileKey = generateFileKey(file.name, file.size, file.lastModified);
+      
+      // Save to localStorage with new hierarchical structure
+      const savedKey = saveHierarchicalData(
+        file.name,
+        file.size,
+        file.lastModified,
+        structure,
+        parsed as any
+      );
+      
+      if (savedKey) {
+        const totalNodes = stats.reduce((sum, s) => sum + s.uniqueValues, 0);
+        console.log(`✅ Saved hierarchical structure with ${totalNodes} unique nodes`);
+        navigate(`/Graph/${encodeURIComponent(fileKey)}`);
+      } else {
+        alert('Failed to save data. File may be too large for localStorage.');
+      }
+    } catch (error) {
+      console.error('Error processing CSV:', error);
+      alert('Error processing CSV file. Please check the file format.');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   return (
@@ -73,8 +98,16 @@ export default function Landing() {
           }}
         />
         <Box sx={{ display: 'flex', gap: 2, justifyContent: 'center', alignItems: 'center', mb: 2 }}>
-          <Button variant="contained" onClick={() => fileInputRef.current?.click()} sx={{}}>Choose CSV</Button>
-          <Button variant="contained" color="primary" onClick={() => { if (selectedFile) { handleUpload(selectedFile); } }} disabled={!selectedFile}>Generate Lineage</Button>
+          <Button variant="contained" onClick={() => fileInputRef.current?.click()} disabled={isProcessing}>Choose CSV</Button>
+          <Button 
+            variant="contained" 
+            color="primary" 
+            onClick={() => { if (selectedFile) { handleUpload(selectedFile); } }} 
+            disabled={!selectedFile || isProcessing}
+            startIcon={isProcessing ? <CircularProgress size={20} color="inherit" /> : null}
+          >
+            {isProcessing ? 'Processing...' : 'Generate Lineage'}
+          </Button>
         </Box>
         {selectedName && <Typography variant="body2" sx={{ mb: 2, color: '#444' }}>Selected: {selectedName}</Typography>}
 

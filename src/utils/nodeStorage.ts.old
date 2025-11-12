@@ -1,0 +1,269 @@
+/**
+ * Storage utility for managing node-based data in localStorage
+ * Handles storage, retrieval, and updates of comprehensive node structures
+ */
+
+import { NodeMap, NodeData } from '../types/nodeModel';
+import { nodeMapToArray, arrayToNodeMap } from './nodeParser';
+
+const STORAGE_VERSION = '2.0'; // Version to track data format changes
+
+interface StorageMetadata {
+  version: string;
+  fileName: string;
+  fileSize: number;
+  lastModified: number;
+  uploadedAt: number;
+  rowCount: number;
+}
+
+interface NodeStorageData {
+  metadata: StorageMetadata;
+  nodes: NodeData[];
+  rawCSV: Record<string, unknown>[];  // Keep original CSV for reference
+}
+
+/**
+ * Generate a storage key for a file
+ */
+export function generateFileKey(file: File): string {
+  return `${file.name}::${file.size}::${file.lastModified}`;
+}
+
+/**
+ * Generate storage key with prefix
+ */
+function getStorageKey(fileKey: string, prefix: string = 'node_data'): string {
+  return `${prefix}::${fileKey}`;
+}
+
+/**
+ * Save node map to localStorage with metadata
+ */
+export function saveNodeMap(
+  fileKey: string,
+  nodeMap: NodeMap,
+  rawCSV: Record<string, unknown>[],
+  metadata: Partial<StorageMetadata> = {}
+): boolean {
+  try {
+    const data: NodeStorageData = {
+      metadata: {
+        version: STORAGE_VERSION,
+        fileName: metadata.fileName || fileKey.split('::')[0] || 'unknown',
+        fileSize: metadata.fileSize || 0,
+        lastModified: metadata.lastModified || Date.now(),
+        uploadedAt: Date.now(),
+        rowCount: rawCSV.length
+      },
+      nodes: nodeMapToArray(nodeMap),
+      rawCSV: rawCSV
+    };
+    
+    const storageKey = getStorageKey(fileKey);
+    localStorage.setItem(storageKey, JSON.stringify(data));
+    
+    // Also store a lightweight index entry for quick listing
+    updateFileIndex(fileKey, data.metadata);
+    
+    return true;
+  } catch (error) {
+    console.error('Error saving node map to localStorage:', error);
+    return false;
+  }
+}
+
+/**
+ * Load node map from localStorage
+ */
+export function loadNodeMap(fileKey: string): { nodeMap: NodeMap; rawCSV: Record<string, unknown>[]; metadata: StorageMetadata } | null {
+  try {
+    const storageKey = getStorageKey(fileKey);
+    const stored = localStorage.getItem(storageKey);
+    
+    if (!stored) {
+      return null;
+    }
+    
+    const data: NodeStorageData = JSON.parse(stored);
+    
+    // Check version compatibility
+    if (data.metadata.version !== STORAGE_VERSION) {
+      console.warn(`Storage version mismatch. Expected ${STORAGE_VERSION}, got ${data.metadata.version}`);
+      // Could implement migration logic here if needed
+    }
+    
+    return {
+      nodeMap: arrayToNodeMap(data.nodes),
+      rawCSV: data.rawCSV,
+      metadata: data.metadata
+    };
+  } catch (error) {
+    console.error('Error loading node map from localStorage:', error);
+    return null;
+  }
+}
+
+/**
+ * Update specific node in storage (e.g., position, visibility changes)
+ */
+export function updateNodeInStorage(
+  fileKey: string,
+  nodeName: string,
+  updates: Partial<NodeData>
+): boolean {
+  try {
+    const data = loadNodeMap(fileKey);
+    if (!data) return false;
+    
+    const { nodeMap, rawCSV, metadata } = data;
+    
+    if (nodeMap[nodeName]) {
+      nodeMap[nodeName] = {
+        ...nodeMap[nodeName],
+        ...updates
+      };
+      
+      return saveNodeMap(fileKey, nodeMap, rawCSV, metadata);
+    }
+    
+    return false;
+  } catch (error) {
+    console.error('Error updating node in storage:', error);
+    return false;
+  }
+}
+
+/**
+ * Update multiple nodes in storage (bulk update)
+ */
+export function updateNodesInStorage(
+  fileKey: string,
+  updates: { [nodeName: string]: Partial<NodeData> }
+): boolean {
+  try {
+    const data = loadNodeMap(fileKey);
+    if (!data) return false;
+    
+    const { nodeMap, rawCSV, metadata } = data;
+    
+    Object.entries(updates).forEach(([nodeName, nodeUpdates]) => {
+      if (nodeMap[nodeName]) {
+        nodeMap[nodeName] = {
+          ...nodeMap[nodeName],
+          ...nodeUpdates
+        };
+      }
+    });
+    
+    return saveNodeMap(fileKey, nodeMap, rawCSV, metadata);
+  } catch (error) {
+    console.error('Error updating nodes in storage:', error);
+    return false;
+  }
+}
+
+/**
+ * Delete node data from storage
+ */
+export function deleteNodeData(fileKey: string): boolean {
+  try {
+    const storageKey = getStorageKey(fileKey);
+    localStorage.removeItem(storageKey);
+    removeFromFileIndex(fileKey);
+    return true;
+  } catch (error) {
+    console.error('Error deleting node data:', error);
+    return false;
+  }
+}
+
+/**
+ * Get list of all stored files
+ */
+export function getStoredFiles(): Array<{ key: string; metadata: StorageMetadata }> {
+  try {
+    const indexKey = 'node_data_index';
+    const stored = localStorage.getItem(indexKey);
+    
+    if (!stored) {
+      return [];
+    }
+    
+    const index: { [fileKey: string]: StorageMetadata } = JSON.parse(stored);
+    
+    return Object.entries(index).map(([key, metadata]) => ({
+      key,
+      metadata
+    }));
+  } catch (error) {
+    console.error('Error getting stored files:', error);
+    return [];
+  }
+}
+
+/**
+ * Update file index (for quick listing)
+ */
+function updateFileIndex(fileKey: string, metadata: StorageMetadata): void {
+  try {
+    const indexKey = 'node_data_index';
+    const stored = localStorage.getItem(indexKey);
+    const index: { [fileKey: string]: StorageMetadata } = stored ? JSON.parse(stored) : {};
+    
+    index[fileKey] = metadata;
+    
+    localStorage.setItem(indexKey, JSON.stringify(index));
+  } catch (error) {
+    console.error('Error updating file index:', error);
+  }
+}
+
+/**
+ * Remove from file index
+ */
+function removeFromFileIndex(fileKey: string): void {
+  try {
+    const indexKey = 'node_data_index';
+    const stored = localStorage.getItem(indexKey);
+    
+    if (!stored) return;
+    
+    const index: { [fileKey: string]: StorageMetadata } = JSON.parse(stored);
+    delete index[fileKey];
+    
+    localStorage.setItem(indexKey, JSON.stringify(index));
+  } catch (error) {
+    console.error('Error removing from file index:', error);
+  }
+}
+
+/**
+ * Get storage size estimate in bytes
+ */
+export function getStorageSize(fileKey: string): number {
+  try {
+    const storageKey = getStorageKey(fileKey);
+    const stored = localStorage.getItem(storageKey);
+    return stored ? new Blob([stored]).size : 0;
+  } catch (error) {
+    return 0;
+  }
+}
+
+/**
+ * Clear all node data from storage
+ */
+export function clearAllNodeData(): boolean {
+  try {
+    const files = getStoredFiles();
+    files.forEach(({ key }) => {
+      deleteNodeData(key);
+    });
+    localStorage.removeItem('node_data_index');
+    return true;
+  } catch (error) {
+    console.error('Error clearing all node data:', error);
+    return false;
+  }
+}

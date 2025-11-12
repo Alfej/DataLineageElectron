@@ -1,0 +1,243 @@
+/**
+ * Node Parser - Transforms CSV data into comprehensive node-based structure
+ * Each node stores all hierarchy level information
+ */
+
+import { CSVRow, NodeData, NodeMap, HierarchyLevel } from '../types/nodeModel';
+
+/**
+ * Parse CSV rows and build a comprehensive node map
+ * Each node contains all hierarchy information from the CSV
+ */
+export function buildNodeMapFromCSV(csvRows: Record<string, unknown>[]): NodeMap {
+  const nodeMap: NodeMap = {};
+  
+  csvRows.forEach((row) => {
+    const csvRow = row as unknown as CSVRow;
+    
+    // Process parent node
+    const parentNodeName = getNodeName(csvRow, 'Parent');
+    const parentHierarchyLevel = determineHierarchyLevel(csvRow, 'Parent');
+    
+    if (parentNodeName && parentHierarchyLevel) {
+      if (!nodeMap[parentNodeName]) {
+        nodeMap[parentNodeName] = createNodeData(csvRow, parentNodeName, parentHierarchyLevel, 'Parent');
+      }
+      // Add relationship to this node
+      if (csvRow.InternalRelationship && !nodeMap[parentNodeName].InternalRelationship.includes(csvRow.InternalRelationship)) {
+        nodeMap[parentNodeName].InternalRelationship.push(csvRow.InternalRelationship);
+      }
+    }
+    
+    // Process child node
+    const childNodeName = getNodeName(csvRow, 'Child');
+    const childHierarchyLevel = determineHierarchyLevel(csvRow, 'Child');
+    
+    if (childNodeName && childHierarchyLevel) {
+      if (!nodeMap[childNodeName]) {
+        nodeMap[childNodeName] = createNodeData(csvRow, childNodeName, childHierarchyLevel, 'Child');
+      }
+      // Add relationship to this node
+      if (csvRow.InternalRelationship && !nodeMap[childNodeName].InternalRelationship.includes(csvRow.InternalRelationship)) {
+        nodeMap[childNodeName].InternalRelationship.push(csvRow.InternalRelationship);
+      }
+    }
+  });
+  
+  return nodeMap;
+}
+
+/**
+ * Create a comprehensive NodeData object from CSV row
+ */
+function createNodeData(
+  row: CSVRow, 
+  nodeName: string, 
+  hierarchyLevel: HierarchyLevel,
+  _side: 'Parent' | 'Child'
+): NodeData {
+  return {
+    NodeName: nodeName,
+    NodeHierarchyLevel: hierarchyLevel,
+    
+    Sector: {
+      Parent: safeString(row.ParentSector),
+      Child: safeString(row.ChildSector)
+    },
+    Application: {
+      Parent: safeString(row.ParentApplication),
+      Child: safeString(row.ChildApplication)
+    },
+    Purpose: {
+      Parent: safeString(row.ParentPurpose),
+      Child: safeString(row.ChildPurpose)
+    },
+    Client: {
+      Parent: safeString(row.ParentClient),
+      Child: safeString(row.ChildClient)
+    },
+    Tool: {
+      Parent: safeString(row.ParentTool),
+      Child: safeString(row.ChildTool)
+    },
+    System: {
+      Parent: safeString(row.ParentSystemID || row.ParentSystem),
+      Child: safeString(row.ChildSystemID || row.ChildSystem)
+    },
+    Schema: {
+      Parent: safeString(row.ParentSchema),
+      Child: safeString(row.ChildSchema)
+    },
+    ObjectName: {
+      Parent: safeString(row.ParentObjectName),
+      Child: safeString(row.ChildObjectName)
+    },
+    
+    InternalRelationship: row.InternalRelationship ? [row.InternalRelationship] : [],
+    Position: { x: 0, y: 0 },  // Will be set during layout
+    FilteredOut: false,
+    Hidden: false
+  };
+}
+
+/**
+ * Determine the node name based on the hierarchy level
+ * Uses the most specific (lowest) non-empty hierarchy value
+ */
+function getNodeName(row: CSVRow, side: 'Parent' | 'Child'): string {
+  const hierarchyFields: Array<keyof CSVRow> = [
+    `${side}ObjectName` as keyof CSVRow,
+    `${side}Schema` as keyof CSVRow,
+    `${side}SystemID` as keyof CSVRow,
+    `${side}Tool` as keyof CSVRow,
+    `${side}Client` as keyof CSVRow,
+    `${side}Purpose` as keyof CSVRow,
+    `${side}Application` as keyof CSVRow,
+    `${side}Sector` as keyof CSVRow,
+  ];
+  
+  // Return the most specific (first non-empty) value
+  for (const field of hierarchyFields) {
+    const value = safeString(row[field]);
+    if (value) {
+      return value;
+    }
+  }
+  
+  return '';
+}
+
+/**
+ * Determine the hierarchy level of a node based on which field is populated
+ */
+function determineHierarchyLevel(row: CSVRow, side: 'Parent' | 'Child'): HierarchyLevel | null {
+  const hierarchyLevels: Array<{ level: HierarchyLevel, field: keyof CSVRow }> = [
+    { level: 'ObjectName', field: `${side}ObjectName` as keyof CSVRow },
+    { level: 'Schema', field: `${side}Schema` as keyof CSVRow },
+    { level: 'System', field: `${side}SystemID` as keyof CSVRow },
+    { level: 'Tool', field: `${side}Tool` as keyof CSVRow },
+    { level: 'Client', field: `${side}Client` as keyof CSVRow },
+    { level: 'Purpose', field: `${side}Purpose` as keyof CSVRow },
+    { level: 'Application', field: `${side}Application` as keyof CSVRow },
+    { level: 'Sector', field: `${side}Sector` as keyof CSVRow },
+  ];
+  
+  // Return the most specific (first non-empty) level
+  for (const { level, field } of hierarchyLevels) {
+    const value = safeString(row[field]);
+    if (value) {
+      return level;
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Convert NodeMap back to array format for storage
+ */
+export function nodeMapToArray(nodeMap: NodeMap): NodeData[] {
+  return Object.values(nodeMap);
+}
+
+/**
+ * Convert array back to NodeMap
+ */
+export function arrayToNodeMap(nodes: NodeData[]): NodeMap {
+  const nodeMap: NodeMap = {};
+  nodes.forEach(node => {
+    nodeMap[node.NodeName] = node;
+  });
+  return nodeMap;
+}
+
+/**
+ * Update node positions in the node map
+ */
+export function updateNodePosition(
+  nodeMap: NodeMap, 
+  nodeName: string, 
+  position: { x: number; y: number }
+): NodeMap {
+  if (nodeMap[nodeName]) {
+    nodeMap[nodeName].Position = position;
+  }
+  return nodeMap;
+}
+
+/**
+ * Update node visibility (filtered/hidden state)
+ */
+export function updateNodeVisibility(
+  nodeMap: NodeMap,
+  nodeName: string,
+  updates: { FilteredOut?: boolean; Hidden?: boolean }
+): NodeMap {
+  if (nodeMap[nodeName]) {
+    if (updates.FilteredOut !== undefined) {
+      nodeMap[nodeName].FilteredOut = updates.FilteredOut;
+    }
+    if (updates.Hidden !== undefined) {
+      nodeMap[nodeName].Hidden = updates.Hidden;
+    }
+  }
+  return nodeMap;
+}
+
+/**
+ * Safe string conversion
+ */
+function safeString(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  return String(value).trim();
+}
+
+/**
+ * Filter nodes based on hierarchy level and values
+ */
+export function filterNodesByHierarchy(
+  nodeMap: NodeMap,
+  level: HierarchyLevel,
+  values: string[],
+  side: 'Parent' | 'Child' | 'Both' = 'Both'
+): NodeMap {
+  const filteredMap: NodeMap = {};
+  
+  Object.entries(nodeMap).forEach(([nodeName, nodeData]) => {
+    const hierarchyData = nodeData[level];
+    
+    let matches = false;
+    if (side === 'Parent' || side === 'Both') {
+      matches = matches || values.includes(hierarchyData.Parent);
+    }
+    if (side === 'Child' || side === 'Both') {
+      matches = matches || values.includes(hierarchyData.Child);
+    }
+    
+    if (matches || values.length === 0) {
+      filteredMap[nodeName] = nodeData;
+    }
+  });
+  
+  return filteredMap;
+}

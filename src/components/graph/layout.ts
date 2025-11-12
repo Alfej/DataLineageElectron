@@ -88,9 +88,12 @@ export const getLayoutedElements = async (
     id: 'root',
     layoutOptions: {
       'elk.algorithm': 'layered',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '100',
-      'elk.spacing.nodeNode': '60',
-      'elk.spacing.componentComponent': '80',
+      // Increase inter-layer and intra-layer spacing for a more spacious layout
+      'elk.layered.spacing.nodeNodeBetweenLayers': '180',
+      'elk.layered.spacing.edgeNodeBetweenLayers': '150',
+      'elk.spacing.nodeNode': '120',
+      'elk.spacing.componentComponent': '200',
+      'elk.spacing.edgeEdge': '40',
       'elk.direction': elkDirection,
       // Improved options for better layout quality
       'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
@@ -98,7 +101,7 @@ export const getLayoutedElements = async (
       'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
       'elk.layered.cycleBreaking.strategy': 'DEPTH_FIRST',
       'elk.separateConnectedComponents': 'true',
-      'elk.spacing.portPort': '10',
+      'elk.spacing.portPort': '30',
       'elk.portConstraints': 'FIXED_SIDE',
     },
     children: nodes.map((n) => ({
@@ -165,14 +168,17 @@ const layoutDisconnectedComponents = async (
       id: `component-${index}`,
       layoutOptions: {
         'elk.algorithm': 'layered',
-        'elk.layered.spacing.nodeNodeBetweenLayers': '80',
-        'elk.spacing.nodeNode': '50',
+        // Larger spacing for each disconnected component as well
+        'elk.layered.spacing.nodeNodeBetweenLayers': '140',
+        'elk.layered.spacing.edgeNodeBetweenLayers': '120',
+        'elk.spacing.nodeNode': '100',
+        'elk.spacing.edgeEdge': '30',
         'elk.direction': elkDirection,
         'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
         'elk.layered.unnecessaryBendpoints': 'false',
         'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
         'elk.layered.cycleBreaking.strategy': 'DEPTH_FIRST',
-        'elk.spacing.portPort': '10',
+        'elk.spacing.portPort': '30',
         'elk.portConstraints': 'FIXED_SIDE',
       },
       children: component.map((n) => ({
@@ -192,8 +198,8 @@ const layoutDisconnectedComponents = async (
       return {
         component,
         layouted,
-        width: ((layouted as any).width || 0) + 100, // Add padding
-        height: ((layouted as any).height || 0) + 100, // Add padding
+        width: ((layouted as any).width || 0) + 200, // Add more padding
+        height: ((layouted as any).height || 0) + 200, // Add more padding
       };
     } catch (err) {
       console.warn(`ELK layout failed for component ${index}`, err);
@@ -223,7 +229,7 @@ const layoutDisconnectedComponents = async (
     // Check if we need to start a new row
     if (currentX + width > maxRowWidth && currentX > 0) {
       currentX = 0;
-      currentY += maxHeightInRow + 150; // Row spacing
+      currentY += maxHeightInRow + 250; // Increase row spacing
       maxHeightInRow = 0;
     }
     
@@ -233,8 +239,8 @@ const layoutDisconnectedComponents = async (
     component.forEach(node => {
       const children = (layouted as any).children || [];
       const gNode = children.find((c: any) => c.id === node.id) || { x: 0, y: 0 };
-      const px = currentX + (typeof gNode.x === 'number' ? gNode.x : 0) + 50; // Add padding
-      const py = currentY + (typeof gNode.y === 'number' ? gNode.y : 0) + 50; // Add padding
+  const px = currentX + (typeof gNode.x === 'number' ? gNode.x : 0) + 100; // Add more padding
+  const py = currentY + (typeof gNode.y === 'number' ? gNode.y : 0) + 100; // Add more padding
       
       const nodeHeight = nodeHeights?.[node.id] || defaultNodeHeight;
       
@@ -250,7 +256,7 @@ const layoutDisconnectedComponents = async (
       });
     });
     
-    currentX += width + 100; // Component spacing
+    currentX += width + 200; // Increase component spacing
   });
   
   return { nodes: allPositionedNodes, edges };

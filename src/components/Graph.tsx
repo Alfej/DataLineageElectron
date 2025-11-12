@@ -37,7 +37,7 @@ import SearchNode from './SearchNode';
 import AnimatedControls from './AnimatedControls';
 import TooltipContent from './graph/TooltipContent';
 import FourHandleNode from './FourHandleNode';
-import SelfLoopEdge from './SelfLoopEdge';
+// import SelfLoopEdge from './SelfLoopEdge'; // Removed: self-loop edges are now filtered out
 import { useNavigate } from 'react-router-dom';
 import logo from '../assets/PepsiCoLogo.png';
 import SettingsBackupRestoreOutlinedIcon from '@mui/icons-material/SettingsBackupRestoreOutlined';
@@ -50,7 +50,8 @@ import RedoOutlined from '@mui/icons-material/RedoOutlined';
 import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
 import { pushHistory, undo as undoHistory, redo as redoHistory, canUndo as canUndoHistory, canRedo as canRedoHistory, ensureInitial, GraphHistoryEntry } from '../utils/history';
 import { exportToCSV, getVisibleTableData } from '../utils/exportCSV';
-import { HierarchyLevel } from '../utils/hierarchyTransform';
+import { HierarchyFromToConfig } from '../utils/hierarchyTransform';
+import HierarchyFromToSelector from './HierarchyFromToSelector';
 
 // PepsiCo palette
 const PEPSI_BLUE = '#004B93';
@@ -60,7 +61,15 @@ const PEPSI_BG_LIGHT = '#EAF3FF';
 // GraphModel provides traversal utilities for the data
 // TooltipContent renders node tooltip details
 
-const GraphInner = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: { data: TableRelation[]; fileKey?: string | null; hierarchyLevel?: HierarchyLevel; onHierarchyLevelChange?: (lvl: HierarchyLevel) => void; }) => {
+const GraphInner = ({ data, fileKey, rawData, hierarchyConfig, onHierarchyConfigChange, hierarchicalStructure: _hierarchicalStructure, showEmptyState }: { 
+  data: TableRelation[]; 
+  fileKey?: string | null; 
+  rawData?: Record<string, unknown>[]; 
+  hierarchyConfig?: HierarchyFromToConfig; 
+  onHierarchyConfigChange?: (config: HierarchyFromToConfig) => void;
+  hierarchicalStructure?: any;
+  showEmptyState?: boolean;
+}) => {
   const { fitView } = useReactFlow();
   const getStorageKey = (base: string) => (fileKey ? `${base}::${fileKey}` : base);
   const nodeWidth = 180;
@@ -304,10 +313,10 @@ const GraphInner = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: {
       neighborhoodNodes: [...neighborhoodNodes],
       selectedNeighborhoodNodes: [...selectedNeighborhoodNodes],
       currentNeighborhoodFilterNodeId,
-      hierarchyLevel: hierarchyLevel || 'Sector',
+      hierarchyConfig: hierarchyConfig || { from: 'Sector', to: 'Sector', fromValues: [], toValues: [] },
       timestamp: Date.now(),
     };
-  }, [nodes, positions, hiddenNodes, filters, layoutDirection, neighborhoodNodes, selectedNeighborhoodNodes, currentNeighborhoodFilterNodeId, hierarchyLevel]);
+  }, [nodes, positions, hiddenNodes, filters, layoutDirection, neighborhoodNodes, selectedNeighborhoodNodes, currentNeighborhoodFilterNodeId, hierarchyConfig]);
   const resetHiddenNodes = async () => {
     try {
       const stored = localStorage.getItem(getStorageKey("graph_node_state"));
@@ -519,17 +528,8 @@ const GraphInner = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: {
             style: { padding: 10, borderRadius: '8px', border: '1px solid #999', background: getColorFor('table', row.childTableType) || '#fff' },
           });
         }
-        if (parent === child) {
-          createdEdges.push({
-            id: `self-${parent}-${index}`,
-            type: 'selfLoop',
-            source: parent,
-            target: child,
-            label: relationship,
-            style: { strokeWidth: 2, stroke: getColorFor('relationship', relationship) || '#444' },
-            markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: getColorFor('relationship', relationship) || '#444' },
-          });
-        } else {
+        // Skip self-loop edges (where parent === child)
+        if (parent !== child) {
           createdEdges.push({
             id: `e-${parent}-${child}-${index}`,
             source: parent,
@@ -1016,17 +1016,8 @@ const GraphInner = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: {
 
       // Create edges with proper handle positioning based on dynamic heights
       if (!hiddenNodes.has(parent) && !hiddenNodes.has(child)) {
-        if (parent === child) {
-          createdEdges.push({
-            id: `self-${parent}-${index}`,
-            type: 'selfLoop',
-            source: parent,
-            target: child,
-            label: relationship,
-            style: { strokeWidth: 2, stroke: getColorFor('relationship', relationship) || "#444" },
-            markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: getColorFor('relationship', relationship) || "#444" },
-          });
-        } else {
+        // Skip self-loop edges (where parent === child)
+        if (parent !== child) {
           const parentPos = createdNodes.find(n => n.id === parent)?.position || positions[parent];
           const childPos = createdNodes.find(n => n.id === child)?.position || positions[child];
           const parentCenter = parentPos ? {
@@ -1261,7 +1252,7 @@ const GraphInner = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: {
 
   // Memoize nodeTypes to avoid recreating the object on every render (prevents React Flow warnings)
   const nodeTypesMemo = useMemo(() => ({ fourHandle: FourHandleNode }), []);
-  const edgeTypesMemo = useMemo(() => ({ selfLoop: SelfLoopEdge }), []);
+  // edgeTypesMemo removed - self-loop edges are now filtered out
 
   // Manual simplify + fit graph using external utility (for button clicks)
   const simplifyGraph = useCallback(async () => {
@@ -1336,9 +1327,9 @@ const GraphInner = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: {
           ? { ...pn, position: entry.positions[pn.id] }
           : pn
       )));
-      // Restore hierarchy level (propagate to parent via callback)
-      if (onHierarchyLevelChange && entry.hierarchyLevel) {
-        onHierarchyLevelChange(entry.hierarchyLevel as HierarchyLevel);
+      // Restore hierarchy config (propagate to parent via callback)
+      if (onHierarchyConfigChange && entry.hierarchyConfig) {
+        onHierarchyConfigChange(entry.hierarchyConfig as HierarchyFromToConfig);
       }
       // Save the restored state to localStorage
       try {
@@ -1378,9 +1369,9 @@ const GraphInner = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: {
           ? { ...pn, position: entry.positions[pn.id] }
           : pn
       )));
-      // Restore hierarchy level (propagate to parent via callback)
-      if (onHierarchyLevelChange && entry.hierarchyLevel) {
-        onHierarchyLevelChange(entry.hierarchyLevel as HierarchyLevel);
+      // Restore hierarchy config (propagate to parent via callback)
+      if (onHierarchyConfigChange && entry.hierarchyConfig) {
+        onHierarchyConfigChange(entry.hierarchyConfig as HierarchyFromToConfig);
       }
       // Save the restored state to localStorage
       try {
@@ -1666,7 +1657,6 @@ const GraphInner = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: {
             key="fullscreen-reactflow"
             nodes={visualNodes}
             edges={visualEdges}
-            edgeTypes={edgeTypesMemo}
             onNodesChange={handleNodesChange}
             onNodeDragStop={nodeManualOps.onNodeDragStop}
             onEdgesChange={onEdgesChange}
@@ -1918,7 +1908,21 @@ const GraphInner = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: {
               </Box>
             </Box>
           </Box>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, alignItems: 'flex-end' }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, alignItems: 'flex-end', minWidth: 320, maxWidth: 400 }}>
+            {/* Hierarchy filter - compact version */}
+            {onHierarchyConfigChange && rawData && rawData.length > 0 && hierarchyConfig && (
+              <Box sx={{ width: '100%' }}>
+                <HierarchyFromToSelector
+                  data={rawData}
+                  value={hierarchyConfig}
+                  onChange={(config) => {
+                    onHierarchyConfigChange(config);
+                    setIsHierarchyChange(true);
+                  }}
+                />
+              </Box>
+            )}
+            
             <LayoutDirection
               value={layoutDirection}
               onChange={(d) => setLayoutDirection(d)}
@@ -1983,6 +1987,62 @@ const GraphInner = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: {
           fitView
         >
           <Background color="#e3f2fd" />
+          
+          {/* Empty State Overlay */}
+          {showEmptyState && (
+            <Panel position="top-center" style={{ 
+              pointerEvents: 'all',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: 'rgba(255, 255, 255, 0.95)',
+              padding: '48px',
+              borderRadius: '16px',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.1)',
+              maxWidth: '500px',
+              textAlign: 'center'
+            }}>
+              <Box sx={{ mb: 3, opacity: 0.4 }}>
+                <svg width="120" height="120" viewBox="0 0 120 120" fill="none">
+                  <circle cx="60" cy="60" r="55" stroke="#bdbdbd" strokeWidth="3" strokeDasharray="8 8"/>
+                  <circle cx="40" cy="50" r="15" fill="#e0e0e0"/>
+                  <circle cx="80" cy="50" r="15" fill="#e0e0e0"/>
+                  <circle cx="60" cy="85" r="15" fill="#e0e0e0"/>
+                  <line x1="40" y1="50" x2="80" y2="50" stroke="#bdbdbd" strokeWidth="2" strokeDasharray="4 4"/>
+                  <line x1="40" y1="50" x2="60" y2="85" stroke="#bdbdbd" strokeWidth="2" strokeDasharray="4 4"/>
+                  <line x1="80" y1="50" x2="60" y2="85" stroke="#bdbdbd" strokeWidth="2" strokeDasharray="4 4"/>
+                </svg>
+              </Box>
+              <Typography variant="h5" sx={{ fontWeight: 600, color: '#424242', mb: 1.5 }}>
+                Select Nodes to Visualize
+              </Typography>
+              <Typography variant="body1" sx={{ color: '#666', mb: 0.5, lineHeight: 1.6 }}>
+                Use the <strong>Hierarchy Filter</strong> panel on the right to select:
+              </Typography>
+              <Typography variant="body2" sx={{ color: '#999', mb: 3, fontSize: '0.875rem' }}>
+                • Choose <strong>FROM</strong> hierarchy level and values<br/>
+                • Choose <strong>TO</strong> hierarchy level and values<br/>
+                • Click <strong>Apply</strong> to build the graph
+              </Typography>
+              <Box sx={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 1,
+                px: 3,
+                py: 1.5,
+                backgroundColor: '#f5f5f5',
+                borderRadius: 2,
+                border: '2px dashed #bdbdbd'
+              }}>
+                <AutoAwesomeOutlinedIcon sx={{ color: '#757575', fontSize: 20 }} />
+                <Typography variant="caption" sx={{ color: '#757575', fontWeight: 500 }}>
+                  Graph will appear here
+                </Typography>
+              </Box>
+            </Panel>
+          )}
+          
           <AnimatedControls 
             style={{ background: "#e3f2fd", borderRadius: 8 }} 
             onResetFilters={handleResetFilters}
@@ -2013,30 +2073,6 @@ const GraphInner = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: {
               hiddenNodes={hiddenNodes}
               onNodeSelect={handleNodeSearch}
             />
-            {onHierarchyLevelChange && (
-              <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                <Typography variant="body2" sx={{ color: '#333' }}>Hierarchy</Typography>
-                <Select
-                  size="small"
-                  value={hierarchyLevel || 'Sector'}
-                  onChange={async (e) => {
-                    const lvl = e.target.value as HierarchyLevel;
-                    onHierarchyLevelChange(lvl);
-                    // Set flag to trigger simplify sequence after new data is received
-                    setIsHierarchyChange(true);
-                  }}
-                >
-                  <MenuItem value="Sector">Sector</MenuItem>
-                  <MenuItem value="Application">Application</MenuItem>
-                  <MenuItem value="Purpose">Purpose</MenuItem>
-                  <MenuItem value="Client">Client</MenuItem>
-                  <MenuItem value="Tool">Tool</MenuItem>
-                  <MenuItem value="System">System</MenuItem>
-                  <MenuItem value="Schema">Schema</MenuItem>
-                  <MenuItem value="ObjectName">Object Name</MenuItem>
-                </Select>
-              </Box>
-            )}
           </Panel>
         </ReactFlow>
       </Box>
@@ -2057,7 +2093,11 @@ const GraphInner = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: {
             <Typography variant="h6" sx={{ color: "#1976d2" }}>Visible Nodes Relationships</Typography>
             <Typography variant="body2" sx={{ color: '#666', mt: 0.5 }}>
               {(() => {
-                const visibleCount = filteredData.filter(row => !hiddenNodes.has(row.parentTableName) && !hiddenNodes.has(row.childTableName)).length;
+                const visibleCount = filteredData.filter(row => 
+                  !hiddenNodes.has(row.parentTableName) && 
+                  !hiddenNodes.has(row.childTableName) && 
+                  row.parentTableName !== row.childTableName // ignore self-joins in count
+                ).length;
                 return `${visibleCount} visible relationships`;
               })()}
             </Typography>
@@ -2065,7 +2105,8 @@ const GraphInner = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: {
           <Button
             variant="contained"
             onClick={() => {
-              const visibleData = getVisibleTableData(filteredData, hiddenNodes);
+              const visibleData = getVisibleTableData(filteredData, hiddenNodes)
+                .filter(row => row.parentTableName !== row.childTableName); // exclude self-joins in export
               const filename = fileKey ? `table-data-${fileKey}` : 'table-data';
               exportToCSV(visibleData, filename);
             }}
@@ -2077,7 +2118,11 @@ const GraphInner = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: {
               alignItems: 'center',
               gap: 1
             }}
-            disabled={filteredData.filter(row => !hiddenNodes.has(row.parentTableName) && !hiddenNodes.has(row.childTableName)).length === 0}
+            disabled={filteredData.filter(row => 
+              !hiddenNodes.has(row.parentTableName) && 
+              !hiddenNodes.has(row.childTableName) && 
+              row.parentTableName !== row.childTableName // exclude self-joins from enable check
+            ).length === 0}
           >
             <DownloadOutlinedIcon fontSize="small" />
             Download CSV
@@ -2101,7 +2146,11 @@ const GraphInner = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: {
             </TableHead>
             <TableBody>
               {(() => {
-                const visible = filteredData.filter(row => !hiddenNodes.has(row.parentTableName) && !hiddenNodes.has(row.childTableName));
+                const visible = filteredData.filter(row => 
+                  !hiddenNodes.has(row.parentTableName) && 
+                  !hiddenNodes.has(row.childTableName) && 
+                  row.parentTableName !== row.childTableName // ignore self-joins in table
+                );
                 const totalPages = Math.max(1, Math.ceil(visible.length / rowsPerPage));
                 const current = Math.min(page, totalPages);
                 const start = (current - 1) * rowsPerPage;
@@ -2132,7 +2181,11 @@ const GraphInner = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: {
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <Typography variant="body2">Page</Typography>
             <Select value={page} size="small" onChange={(e) => setPage(Number(e.target.value))}>
-              {Array.from({ length: Math.max(1, Math.ceil(filteredData.filter(row => !hiddenNodes.has(row.parentTableName) && !hiddenNodes.has(row.childTableName)).length / rowsPerPage)) }).map((_, i) => (
+              {Array.from({ length: Math.max(1, Math.ceil(filteredData.filter(row => 
+                !hiddenNodes.has(row.parentTableName) && 
+                !hiddenNodes.has(row.childTableName) && 
+                row.parentTableName !== row.childTableName // ignore self-joins in pagination
+              ).length / rowsPerPage)) }).map((_, i) => (
                 <MenuItem key={i + 1} value={i + 1}>{i + 1}</MenuItem>
               ))}
             </Select>
@@ -2144,9 +2197,33 @@ const GraphInner = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: {
   );
 };
 
-const Graph = ({ data, fileKey, hierarchyLevel, onHierarchyLevelChange }: { data: TableRelation[]; fileKey?: string | null; hierarchyLevel?: any; onHierarchyLevelChange?: (lvl: any) => void; }) => (
+const Graph = ({ 
+  data, 
+  fileKey, 
+  rawData, 
+  hierarchyConfig, 
+  onHierarchyConfigChange,
+  hierarchicalStructure,
+  showEmptyState
+}: { 
+  data: TableRelation[]; 
+  fileKey?: string | null; 
+  rawData?: Record<string, unknown>[]; 
+  hierarchyConfig?: HierarchyFromToConfig; 
+  onHierarchyConfigChange?: (config: HierarchyFromToConfig) => void;
+  hierarchicalStructure?: any;
+  showEmptyState?: boolean;
+}) => (
   <ReactFlowProvider>
-    <GraphInner data={data} fileKey={fileKey} hierarchyLevel={hierarchyLevel} onHierarchyLevelChange={onHierarchyLevelChange} />
+    <GraphInner 
+      data={data} 
+      fileKey={fileKey} 
+      rawData={rawData} 
+      hierarchyConfig={hierarchyConfig} 
+      onHierarchyConfigChange={onHierarchyConfigChange}
+      hierarchicalStructure={hierarchicalStructure}
+      showEmptyState={showEmptyState}
+    />
   </ReactFlowProvider>
 );
 

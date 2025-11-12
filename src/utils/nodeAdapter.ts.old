@@ -1,0 +1,215 @@
+/**
+ * Adapter to convert between new node-based structure and legacy TableRelation format
+ * This maintains backward compatibility with existing graph rendering code
+ */
+
+import { NodeMap, NodeData, HierarchyLevel } from '../types/nodeModel';
+import { TableRelation } from '../components/graph/graphModel';
+
+export interface HierarchyFromToConfig {
+  from: HierarchyLevel;
+  to: HierarchyLevel;
+  fromValues: string[];
+  toValues: string[];
+}
+
+/**
+ * Convert NodeMap to TableRelation array for graph rendering
+ * Uses the rawCSV to maintain relationship connections
+ */
+export function convertNodeMapToRelations(
+  nodeMap: NodeMap,
+  rawCSV: Record<string, unknown>[],
+  hierarchyConfig: HierarchyFromToConfig
+): TableRelation[] {
+  const relations: TableRelation[] = [];
+  
+  rawCSV.forEach((row) => {
+    const parentNodeName = getNodeNameFromRow(row, 'Parent');
+    const childNodeName = getNodeNameFromRow(row, 'Child');
+    
+    if (!parentNodeName || !childNodeName) return;
+    if (!nodeMap[parentNodeName] || !nodeMap[childNodeName]) return;
+    
+    const parentNode = nodeMap[parentNodeName];
+    const childNode = nodeMap[childNodeName];
+    
+    // Apply hierarchy filtering
+    if (!matchesHierarchyFilter(parentNode, childNode, hierarchyConfig)) {
+      return;
+    }
+    
+    // Skip if either node is hidden or filtered out
+    if (parentNode.Hidden || childNode.Hidden) return;
+    if (parentNode.FilteredOut || childNode.FilteredOut) return;
+    
+    // Create relation based on hierarchy configuration
+    const relation = createRelationFromNodes(
+      parentNode,
+      childNode,
+      row,
+      hierarchyConfig
+    );
+    
+    if (relation) {
+      relations.push(relation);
+    }
+  });
+  
+  return relations;
+}
+
+/**
+ * Create a TableRelation from two nodes
+ */
+function createRelationFromNodes(
+  parentNode: NodeData,
+  childNode: NodeData,
+  csvRow: Record<string, unknown>,
+  config: HierarchyFromToConfig
+): TableRelation | null {
+  const relationship = String(csvRow.InternalRelationship || '');
+  
+  // Build node names based on hierarchy configuration
+  let parentName: string;
+  let childName: string;
+  let tableType: string;
+  
+  if (config.from === config.to) {
+    // Same level hierarchy - use node names directly
+    parentName = parentNode.NodeName;
+    childName = childNode.NodeName;
+    tableType = config.from;
+  } else {
+    // Cross-hierarchy - combine from and to values
+    const fromParentValue = parentNode[config.from]?.Parent || '';
+    const toParentValue = parentNode[config.to]?.Parent || '';
+    const fromChildValue = childNode[config.from]?.Child || '';
+    const toChildValue = childNode[config.to]?.Child || '';
+    
+    parentName = `${fromParentValue} → ${toParentValue}`;
+    childName = `${fromChildValue} → ${toChildValue}`;
+    tableType = `${config.from} → ${config.to}`;
+  }
+  
+  return {
+    parentTableName: parentName,
+    childTableName: childName,
+    parentTableType: tableType,
+    childTableType: tableType,
+    relationship,
+    ClientID: String(csvRow.ParentClient || ''),
+    AppID: String(csvRow.ParentApplication || ''),
+    // Include all original CSV fields for filtering
+    ...csvRow
+  } as TableRelation;
+}
+
+/**
+ * Check if nodes match the hierarchy filter configuration
+ */
+function matchesHierarchyFilter(
+  parentNode: NodeData,
+  childNode: NodeData,
+  config: HierarchyFromToConfig
+): boolean {
+  // Check from values filter
+  if (config.fromValues.length > 0) {
+    const parentFromValue = parentNode[config.from]?.Parent || '';
+    const childFromValue = childNode[config.from]?.Child || '';
+    
+    const hasFromMatch = config.fromValues.includes(parentFromValue) || 
+                        config.fromValues.includes(childFromValue);
+    if (!hasFromMatch) return false;
+  }
+  
+  // Check to values filter
+  if (config.toValues.length > 0) {
+    const parentToValue = parentNode[config.to]?.Parent || '';
+    const childToValue = childNode[config.to]?.Child || '';
+    
+    const hasToMatch = config.toValues.includes(parentToValue) || 
+                      config.toValues.includes(childToValue);
+    if (!hasToMatch) return false;
+  }
+  
+  return true;
+}
+
+/**
+ * Get node name from CSV row (most specific hierarchy level)
+ */
+function getNodeNameFromRow(row: Record<string, unknown>, side: 'Parent' | 'Child'): string {
+  const hierarchyFields = [
+    `${side}ObjectName`,
+    `${side}Schema`,
+    `${side}SystemID`,
+    `${side}Tool`,
+    `${side}Client`,
+    `${side}Purpose`,
+    `${side}Application`,
+    `${side}Sector`,
+  ];
+  
+  for (const field of hierarchyFields) {
+    const value = String(row[field] || '').trim();
+    if (value) {
+      return value;
+    }
+  }
+  
+  return '';
+}
+
+/**
+ * Get all unique nodes from NodeMap
+ */
+export function getNodesArray(nodeMap: NodeMap): NodeData[] {
+  return Object.values(nodeMap);
+}
+
+/**
+ * Filter NodeMap based on various criteria
+ */
+export function filterNodes(
+  nodeMap: NodeMap,
+  filters: {
+    hierarchyLevel?: HierarchyLevel;
+    showHidden?: boolean;
+    showFilteredOut?: boolean;
+    hierarchyValues?: { level: HierarchyLevel; values: string[] };
+  }
+): NodeMap {
+  const filtered: NodeMap = {};
+  
+  Object.entries(nodeMap).forEach(([nodeName, node]) => {
+    // Filter by hierarchy level
+    if (filters.hierarchyLevel && node.NodeHierarchyLevel !== filters.hierarchyLevel) {
+      return;
+    }
+    
+    // Filter by hidden state
+    if (!filters.showHidden && node.Hidden) {
+      return;
+    }
+    
+    // Filter by filtered out state
+    if (!filters.showFilteredOut && node.FilteredOut) {
+      return;
+    }
+    
+    // Filter by hierarchy values
+    if (filters.hierarchyValues && filters.hierarchyValues.values.length > 0) {
+      const { level, values } = filters.hierarchyValues;
+      const hierarchyData = node[level];
+      const matches = values.includes(hierarchyData.Parent) || values.includes(hierarchyData.Child);
+      if (!matches) {
+        return;
+      }
+    }
+    
+    filtered[nodeName] = node;
+  });
+  
+  return filtered;
+}

@@ -93,7 +93,7 @@ export function getAllTypeMaps() {
   };
 }
 
-export function setColorFor(kind: 'table' | 'relationship', type: string, color: string) {
+export function setColorFor(_kind: 'table' | 'relationship', type: string, _color: string) {
   if (!type) return;
   // Intentionally do nothing: color picker UI retained but persistence disabled per request
   return;
