@@ -98,3 +98,10 @@ export function setColorFor(_kind: 'table' | 'relationship', type: string, _colo
   // Intentionally do nothing: color picker UI retained but persistence disabled per request
   return;
 }
+
+export function clearAllTypeMaps() {
+  try {
+    localStorage.removeItem(TABLE_KEY);
+    localStorage.removeItem(REL_KEY);
+  } catch {}
+}

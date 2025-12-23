@@ -368,3 +368,128 @@ export async function buildGraphRelationshipsV4(
 
   return out;
 }
+
+/**
+ * V5 logic for multi-level selection:
+ * Build relationships showing connections between nodes across multiple selected levels
+ * - For each pair of levels, find connections between selected values
+ * - Within each level, find connections between selected values
+ * - Preserves the existing relationship logic
+ */
+export async function buildGraphRelationshipsV5(
+  structure: HierarchicalDataStructure,
+  selectedLevels: HierarchyLevel[],
+  selectedValues: string[]
+): Promise<GraphRelationship[]> {
+  const out: GraphRelationship[] = [];
+  if (!selectedLevels?.length || !selectedValues?.length) return out;
+
+  const mapping = await loadSameHierarchyMapping();
+
+  // Build a map of level -> values for quick lookup
+  const levelValuesMap = new Map<HierarchyLevel, string[]>();
+  selectedLevels.forEach(level => {
+    const values = selectedValues.filter(value => 
+      structure[level] && structure[level][value]
+    );
+    if (values.length > 0) {
+      levelValuesMap.set(level, values);
+    }
+  });
+
+  // NEW CASCADING LOGIC:
+  // When multiple levels selected: Level1 → Level2, Level2 → Level3, etc.
+  // Plus intra-level connections within the last level
+  
+  if (selectedLevels.length > 1) {
+    // Step 1: Cascading cross-level relationships (only between consecutive levels)
+    for (let i = 0; i < selectedLevels.length - 1; i++) {
+      const fromLevel = selectedLevels[i];
+      const toLevel = selectedLevels[i + 1]; // Next level in cascade
+      const fromValues = levelValuesMap.get(fromLevel) || [];
+      const toValues = levelValuesMap.get(toLevel) || [];
+
+      // Check connections between consecutive level pairs
+      for (const fromValue of fromValues) {
+        const fromNode = structure[fromLevel][fromValue];
+        const toMap = (fromNode?.Childs?.[toLevel] || {}) as Record<string, string[]>;
+        
+        for (const toValue of toValues) {
+          const isConnected = Object.prototype.hasOwnProperty.call(toMap, toValue);
+          if (isConnected) {
+            const rels = getMappedRelationships(mapping, fromLevel, toLevel);
+            out.push({ 
+              fromLevel, 
+              fromValue, 
+              toLevel, 
+              toValue, 
+              internalRelationships: [...rels] 
+            });
+          }
+        }
+      }
+    }
+
+    // Step 2: Intra-level relationships within the LAST selected level only
+    const lastLevel = selectedLevels[selectedLevels.length - 1];
+    const values = levelValuesMap.get(lastLevel) || [];
+    
+    for (let i = 0; i < values.length; i++) {
+      for (let j = i + 1; j < values.length; j++) {
+        const a = values[i];
+        const b = values[j];
+        
+        const nodeA = structure[lastLevel][a];
+        const mapA = (nodeA?.Childs?.[lastLevel] || {}) as Record<string, string[]>;
+        const relAB = mapA[b] || [];
+        
+        const nodeB = structure[lastLevel][b];
+        const mapB = (nodeB?.Childs?.[lastLevel] || {}) as Record<string, string[]>;
+        const relBA = mapB[a] || [];
+        
+        const combined = Array.from(new Set([...(relAB || []), ...(relBA || [])]));
+        if (combined.length > 0) {
+          out.push({ 
+            fromLevel: lastLevel, 
+            fromValue: a, 
+            toLevel: lastLevel, 
+            toValue: b, 
+            internalRelationships: combined 
+          });
+        }
+      }
+    }
+  } else if (selectedLevels.length === 1) {
+    // Special case: Only one level selected - show only intra-level connections
+    const level = selectedLevels[0];
+    const values = levelValuesMap.get(level) || [];
+    
+    for (let i = 0; i < values.length; i++) {
+      for (let j = i + 1; j < values.length; j++) {
+        const a = values[i];
+        const b = values[j];
+        
+        const nodeA = structure[level][a];
+        const mapA = (nodeA?.Childs?.[level] || {}) as Record<string, string[]>;
+        const relAB = mapA[b] || [];
+        
+        const nodeB = structure[level][b];
+        const mapB = (nodeB?.Childs?.[level] || {}) as Record<string, string[]>;
+        const relBA = mapB[a] || [];
+        
+        const combined = Array.from(new Set([...(relAB || []), ...(relBA || [])]));
+        if (combined.length > 0) {
+          out.push({ 
+            fromLevel: level, 
+            fromValue: a, 
+            toLevel: level, 
+            toValue: b, 
+            internalRelationships: combined 
+          });
+        }
+      }
+    }
+  }
+
+  return out;
+}

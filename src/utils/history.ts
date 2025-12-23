@@ -12,11 +12,9 @@ export type GraphHistoryEntry = {
   currentNeighborhoodFilterNodeId?: string | null; // Track the node that triggered neighborhood filter for toggle functionality
   hierarchyLevel?: string; // Track selected hierarchy level (Sector, Application, etc.) - deprecated, use hierarchyConfig
   hierarchyConfig?: {
-    from: string;
-    to: string;
-    fromValues: string[];
-    toValues: string[];
-  }; // New hierarchy configuration for from/to system
+    selectedLevels: string[];
+    selectedValues: string[];
+  }; // New hierarchy configuration for multi-level selection system
   timestamp: number;
   _sig?: string; // internal hash signature for dedupe
 };
@@ -99,7 +97,7 @@ export async function pushHistory(
     const neighborhoodSig = (e.neighborhoodNodes || []).sort().join(',');
     const selectedNeighborhoodSig = (e.selectedNeighborhoodNodes || []).sort().join(';');
     const hierarchyConfigSig = e.hierarchyConfig ? 
-      `${e.hierarchyConfig.from}:${e.hierarchyConfig.to}:${e.hierarchyConfig.fromValues.sort().join(';')}:${e.hierarchyConfig.toValues.sort().join(';')}` : 
+      `${e.hierarchyConfig.selectedLevels.sort().join(',')}:${e.hierarchyConfig.selectedValues.sort().join(';')}` : 
       (e.hierarchyLevel || '');
     return `${posKeys.length}|${hiddenSize}|${filterSig}|${e.layoutDirection}|${hierarchyConfigSig}|${neighborhoodSig}|${selectedNeighborhoodSig}|${e.currentNeighborhoodFilterNodeId || ''}|${head}`;
   };

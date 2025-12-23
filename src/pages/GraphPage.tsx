@@ -4,7 +4,7 @@ import Graph from '../components/Graph';
 import { parseCsvFile } from '../utils/parseCSV';
 import { TableRelation } from '../components/graph/graphModel';
 import { Box, Button, Typography } from '@mui/material';
-import { HierarchyFromToConfig, transformRelationsFromTo, transformRelations } from '../utils/hierarchyTransform';
+import { HierarchyFromToConfig, transformRelationsFromTo } from '../utils/hierarchyTransform';
 import { loadHierarchicalData } from '../utils/hierarchicalStorage';
 import { HierarchicalDataStructure } from '../types/nodeModel';
 
@@ -18,10 +18,8 @@ export default function GraphPage() {
   
   // Hierarchy configuration state - NO default selections
   const [hierarchyConfig, setHierarchyConfig] = useState<HierarchyFromToConfig>({
-    from: 'Sector',
-    to: 'Application',
-    fromValues: [],  // Empty by default
-    toValues: []     // Empty by default
+    selectedLevels: [],  // Empty by default
+    selectedValues: []   // Empty by default
   });
 
 
@@ -100,8 +98,7 @@ export default function GraphPage() {
           setData(transformed);
         } catch (error) {
           console.error('Error in transformRelationsFromTo:', error);
-          const transformed = transformRelations(rawRows, hierarchyConfig.from);
-          setData(transformed);
+          setData([]);
         }
       } else {
         setData([]);
@@ -110,30 +107,28 @@ export default function GraphPage() {
     }
 
     // NEW LOGIC: Use hierarchical structure to build graph
-    const hasFromValues = hierarchyConfig.fromValues && hierarchyConfig.fromValues.length > 0;
-    const hasToValues = hierarchyConfig.toValues && hierarchyConfig.toValues.length > 0;
+    const hasLevels = hierarchyConfig.selectedLevels && hierarchyConfig.selectedLevels.length > 0;
+    const hasValues = hierarchyConfig.selectedValues && hierarchyConfig.selectedValues.length > 0;
 
-    if (!hasFromValues || !hasToValues) {
+    if (!hasLevels || !hasValues) {
       // No selections = empty graph
-      console.log('ℹ️ No FROM/TO values selected - empty graph');
+      console.log('ℹ️ No levels/values selected - empty graph');
       setData([]);
       return;
     }
 
     console.log('🔨 Building graph with selections:', {
-      from: `${hierarchyConfig.from}: [${hierarchyConfig.fromValues.join(', ')}]`,
-      to: `${hierarchyConfig.to}: [${hierarchyConfig.toValues.join(', ')}]`
+      levels: hierarchyConfig.selectedLevels.join(', '),
+      values: `${hierarchyConfig.selectedValues.length} value(s)`
     });
 
     // Import graph builder functions
-    import('../utils/graphBuilder').then(async ({ buildGraphRelationshipsV4, convertToTableRelations }) => {
-      // Build relationships using updated V4 logic
-      const relationships = await buildGraphRelationshipsV4(
+    import('../utils/graphBuilder').then(async ({ buildGraphRelationshipsV5, convertToTableRelations }) => {
+      // Build relationships using updated V5 logic for multi-level selection
+      const relationships = await buildGraphRelationshipsV5(
         hierarchicalStructure,
-        hierarchyConfig.from,
-        hierarchyConfig.fromValues,
-        hierarchyConfig.to,
-        hierarchyConfig.toValues
+        hierarchyConfig.selectedLevels,
+        hierarchyConfig.selectedValues
       );
 
       console.log(`✅ Built ${relationships.length} relationship pairs`);
@@ -165,8 +160,8 @@ export default function GraphPage() {
   const decodedKey = decodeURIComponent(fileKey);
   
   // Check if we should show empty state
-  const hasSelections = hierarchyConfig.fromValues && hierarchyConfig.fromValues.length > 0 
-    && hierarchyConfig.toValues && hierarchyConfig.toValues.length > 0;
+  const hasSelections = hierarchyConfig.selectedLevels && hierarchyConfig.selectedLevels.length > 0 
+    && hierarchyConfig.selectedValues && hierarchyConfig.selectedValues.length > 0;
   
   const showEmptyState = !hasSelections || (hasSelections && data.length === 0);
   

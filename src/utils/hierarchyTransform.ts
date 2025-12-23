@@ -11,10 +11,8 @@ export type HierarchyLevel =
   | "ObjectName";
 
 export interface HierarchyFromToConfig {
-  from: HierarchyLevel;
-  to: HierarchyLevel;
-  fromValues: string[];
-  toValues: string[];
+  selectedLevels: HierarchyLevel[];
+  selectedValues: string[];
 }
 
 const parentFieldMap: Record<HierarchyLevel, string> = {
@@ -79,8 +77,8 @@ export function transformRelations(
 }
 
 /**
- * Transform raw CSV rows into TableRelation[] for the graph using from/to hierarchy configuration.
- * Supports filtering by specific values within each hierarchy level.
+ * Transform raw CSV rows into TableRelation[] for the graph using hierarchy configuration.
+ * Supports filtering by multiple selected levels and their values.
  */
 export function transformRelationsFromTo(
   rawRows: Record<string, unknown>[],
@@ -90,69 +88,48 @@ export function transformRelationsFromTo(
     return [];
   }
   
-  // If from and to are the same, use the original transform logic
-  if (config.from === config.to) {
-    const filtered = (rawRows || [])
-      .filter((row) => {
-        if (config.fromValues.length === 0 && config.toValues.length === 0) {
-          return true; // No filtering
-        }
-        
-        const parentField = parentFieldMap[config.from];
-        const childField = childFieldMap[config.from];
+  // If no levels or values selected, return empty
+  if (config.selectedLevels.length === 0 || config.selectedValues.length === 0) {
+    return [];
+  }
+
+  // Filter rows that match any of the selected values in any of the selected levels
+  return (rawRows || [])
+    .map((row) => {
+      const relationship = safeString(row?.InternalRelationship);
+
+      // Collect all values from the row that match selected levels
+      const parentValues: string[] = [];
+      const childValues: string[] = [];
+      
+      for (const level of config.selectedLevels) {
+        const parentField = parentFieldMap[level];
+        const childField = childFieldMap[level];
         const parentValue = safeString(row?.[parentField]);
         const childValue = safeString(row?.[childField]);
         
-        const allSelectedValues = [...config.fromValues, ...config.toValues];
-        if (allSelectedValues.length === 0) return true;
-        
-        return allSelectedValues.includes(parentValue) || allSelectedValues.includes(childValue);
-      });
-      
-    return transformRelations(filtered, config.from);
-  }
+        if (parentValue && config.selectedValues.includes(parentValue)) {
+          parentValues.push(`${level}:${parentValue}`);
+        }
+        if (childValue && config.selectedValues.includes(childValue)) {
+          childValues.push(`${level}:${childValue}`);
+        }
+      }
 
-  const fromParentField = parentFieldMap[config.from];
-  const fromChildField = childFieldMap[config.from];
-  const toParentField = parentFieldMap[config.to];
-  const toChildField = childFieldMap[config.to];
-
-  return (rawRows || [])
-    .map((row) => {
-      const fromParentValue = safeString(row?.[fromParentField]);
-      const fromChildValue = safeString(row?.[fromChildField]);
-      const toParentValue = safeString(row?.[toParentField]);
-      const toChildValue = safeString(row?.[toChildField]);
-      const relationship = safeString(row?.InternalRelationship);
-
-      // Skip rows with incomplete data
-      if (!fromParentValue || !fromChildValue || !toParentValue || !toChildValue) {
+      // Skip rows that don't have at least one matching parent and one matching child
+      if (parentValues.length === 0 || childValues.length === 0) {
         return null;
       }
 
-      // Apply from values filter (if specified)
-      if (config.fromValues.length > 0) {
-        const hasFromMatch = config.fromValues.includes(fromParentValue) || 
-                            config.fromValues.includes(fromChildValue);
-        if (!hasFromMatch) return null;
-      }
-
-      // Apply to values filter (if specified)  
-      if (config.toValues.length > 0) {
-        const hasToMatch = config.toValues.includes(toParentValue) || 
-                          config.toValues.includes(toChildValue);
-        if (!hasToMatch) return null;
-      }
-
-      // Create parent node name combining from and to hierarchy values
-      const parentName = `${fromParentValue} → ${toParentValue}`;
-      const childName = `${fromChildValue} → ${toChildValue}`;
+      // Create node names from collected values
+      const parentName = parentValues.join(' | ');
+      const childName = childValues.join(' | ');
 
       const base: TableRelation = {
         parentTableName: parentName,
         childTableName: childName,
-        parentTableType: `${config.from} → ${config.to}`,
-        childTableType: `${config.from} → ${config.to}`,
+        parentTableType: config.selectedLevels.join(', '),
+        childTableType: config.selectedLevels.join(', '),
         relationship,
         ClientID: safeString(row?.ParentClient) || "",
         AppID: safeString(row?.ParentApplication) || "",

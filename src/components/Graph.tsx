@@ -27,7 +27,7 @@ import {
 import FilterSelect from './FilterSelect';
 
 import GraphModel, { TableRelation } from './graph/graphModel';
-import { registerTypesFromData, getColorFor, getAllTypeMaps } from '../utils/typeColors';
+import { registerTypesFromData, getColorFor, getAllTypeMaps, clearAllTypeMaps } from '../utils/typeColors';
 import getLayoutedElements from './graph/layout';
 import simplifyFit from './simplifyFit';
 import { useNodeManualOperations } from './NodeManualOperations';
@@ -51,7 +51,7 @@ import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
 import { pushHistory, undo as undoHistory, redo as redoHistory, canUndo as canUndoHistory, canRedo as canRedoHistory, ensureInitial, GraphHistoryEntry } from '../utils/history';
 import { exportToCSV, getVisibleTableData } from '../utils/exportCSV';
 import { HierarchyFromToConfig } from '../utils/hierarchyTransform';
-import HierarchyFromToSelector from './HierarchyFromToSelector';
+import HierarchyLevelSelector from './HierarchyLevelSelector';
 
 // PepsiCo palette
 const PEPSI_BLUE = '#004B93';
@@ -184,9 +184,19 @@ const GraphInner = ({ data, fileKey, rawData, hierarchyConfig, onHierarchyConfig
 
   useEffect(() => {
     try {
-      const maps = getAllTypeMaps();
-      setTableTypeMap(maps.table);
-      setRelTypeMap(maps.relationship);
+      if (data && data.length > 0) {
+        // First register types from data (this updates localStorage)
+        registerTypesFromData(data as any[]);
+        // Then load the updated maps
+        const maps = getAllTypeMaps();
+        setTableTypeMap(maps.table);
+        setRelTypeMap(maps.relationship);
+      } else {
+        // Clear type maps when data is empty (hierarchy levels cleared)
+        clearAllTypeMaps();
+        setTableTypeMap({});
+        setRelTypeMap({});
+      }
     } catch { }
   }, [data]);
   // Initialize filters from localStorage or default to empty
@@ -313,7 +323,7 @@ const GraphInner = ({ data, fileKey, rawData, hierarchyConfig, onHierarchyConfig
       neighborhoodNodes: [...neighborhoodNodes],
       selectedNeighborhoodNodes: [...selectedNeighborhoodNodes],
       currentNeighborhoodFilterNodeId,
-      hierarchyConfig: hierarchyConfig || { from: 'Sector', to: 'Sector', fromValues: [], toValues: [] },
+      hierarchyConfig: hierarchyConfig || { selectedLevels: [], selectedValues: [] },
       timestamp: Date.now(),
     };
   }, [nodes, positions, hiddenNodes, filters, layoutDirection, neighborhoodNodes, selectedNeighborhoodNodes, currentNeighborhoodFilterNodeId, hierarchyConfig]);
@@ -436,8 +446,7 @@ const GraphInner = ({ data, fileKey, rawData, hierarchyConfig, onHierarchyConfig
   // 🔹 Extract dynamic columns and initialize/restore filters
   useEffect(() => {
     if (data.length > 0) {
-      // register any new table/relationship types and assign colors
-      try { registerTypesFromData(data as any[]); } catch { }
+      // Type registration now happens in the earlier useEffect
       const cols = Object.keys(data[0]);
       setColumns(cols);
 
@@ -817,6 +826,73 @@ const GraphInner = ({ data, fileKey, rawData, hierarchyConfig, onHierarchyConfig
     columns.forEach((col) => {
       const values = new Set<string>();
 
+      // Special handling for hierarchy level columns when using hierarchyConfig
+      if (hierarchyConfig && hierarchyConfig.selectedLevels && hierarchyConfig.selectedValues && rawData) {
+        // Check if this column is a hierarchy level column (parent or child)
+        const levelColumnMap: Record<string, string> = {
+          'parentSector': 'Sector',
+          'childSector': 'Sector',
+          'parentApplication': 'Application',
+          'childApplication': 'Application',
+          'parentPurpose': 'Purpose',
+          'childPurpose': 'Purpose',
+          'parentClient': 'Client',
+          'childClient': 'Client',
+          'parentTool': 'Tool',
+          'childTool': 'Tool',
+          'parentSystem': 'System',
+          'childSystem': 'System',
+          'parentSchema': 'Schema',
+          'childSchema': 'Schema',
+          'parentObjectName': 'ObjectName',
+          'childObjectName': 'ObjectName',
+        };
+
+        const levelName = levelColumnMap[col];
+        if (levelName && hierarchyConfig.selectedLevels.includes(levelName as any)) {
+          // For hierarchy columns of selected levels, filter selectedValues to only include
+          // values that belong to this specific level
+          const levelFieldMap: Record<string, string[]> = {
+            'Sector': ['ParentSector', 'ChildSector'],
+            'Application': ['ParentApplication', 'ChildApplication'],
+            'Purpose': ['ParentPurpose', 'ChildPurpose'],
+            'Client': ['ParentClient', 'ChildClient'],
+            'Tool': ['ParentTool', 'ChildTool'],
+            'System': ['ParentSystemID', 'ChildSystemID'],
+            'Schema': ['ParentSchema', 'ChildSchema'],
+            'ObjectName': ['ParentObjectName', 'ChildObjectName'],
+          };
+
+          const fieldsToCheck = levelFieldMap[levelName];
+          if (fieldsToCheck) {
+            // Get unique values from rawData for this specific level
+            const levelValues = new Set<string>();
+            rawData.forEach(row => {
+              fieldsToCheck.forEach(field => {
+                const value = row[field];
+                if (value && typeof value === 'string' && value.trim()) {
+                  levelValues.add(value.trim());
+                }
+              });
+            });
+
+            // Only include selected values that actually belong to this level
+            hierarchyConfig.selectedValues.forEach(v => {
+              if (levelValues.has(v)) {
+                values.add(v);
+              }
+            });
+
+            // If we found values for this level, use them
+            if (values.size > 0) {
+              opts[col] = Array.from(values).sort();
+              return;
+            }
+          }
+        }
+      }
+
+      // Default behavior: extract from data
       // For each row, check whether it passes current filters except for this column
       data.forEach((row) => {
         // neighborhood filter: if set, only consider rows where both parent and child are in the neighborhood
@@ -843,7 +919,7 @@ const GraphInner = ({ data, fileKey, rawData, hierarchyConfig, onHierarchyConfig
     });
 
     return opts;
-  }, [data, filters, columns, neighborhoodNodes]);
+  }, [data, filters, columns, neighborhoodNodes, hierarchyConfig, rawData]);
 
   // Available neighborhood options should respect current column filters (ignore neighborhood selection)
   const neighborhoodOptions = useMemo(() => {
@@ -1853,6 +1929,16 @@ const GraphInner = ({ data, fileKey, rawData, hierarchyConfig, onHierarchyConfig
           </Typography>
         </Box>
         <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+          {onHierarchyConfigChange && rawData && rawData.length > 0 && hierarchyConfig && (
+            <HierarchyLevelSelector
+              data={rawData}
+              value={hierarchyConfig}
+              onChange={(config: HierarchyFromToConfig) => {
+                onHierarchyConfigChange(config);
+                setIsHierarchyChange(true);
+              }}
+            />
+          )}
           <Button variant="contained" onClick={() => navigate('/')} sx={{ fontWeight: 'bold', backgroundColor: '#0055A4', color: '#fff', '&:hover': { backgroundColor: '#004080' } }}>
             <UploadFileOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Upload CSV
           </Button>
@@ -1909,20 +1995,6 @@ const GraphInner = ({ data, fileKey, rawData, hierarchyConfig, onHierarchyConfig
             </Box>
           </Box>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, alignItems: 'flex-end', minWidth: 320, maxWidth: 400 }}>
-            {/* Hierarchy filter - compact version */}
-            {onHierarchyConfigChange && rawData && rawData.length > 0 && hierarchyConfig && (
-              <Box sx={{ width: '100%' }}>
-                <HierarchyFromToSelector
-                  data={rawData}
-                  value={hierarchyConfig}
-                  onChange={(config) => {
-                    onHierarchyConfigChange(config);
-                    setIsHierarchyChange(true);
-                  }}
-                />
-              </Box>
-            )}
-            
             <LayoutDirection
               value={layoutDirection}
               onChange={(d) => setLayoutDirection(d)}
