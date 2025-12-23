@@ -3,9 +3,8 @@ import { Box, Button, Typography, List, ListItem, ListItemText, ListItemButton, 
 import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
 import { useNavigate } from 'react-router-dom';
 import { parseCsvFile } from '../utils/parseCSV';
-import { filterDataWithLimit } from '../utils/filterData';
 import { TableRelation } from './graph/graphModel';
-import FilterModal from './FilterModal';
+import { setItem as setIndexedDBItem } from '../utils/indexedDB';
 import logo from '../assets/PepsiCoLogo.png';
 import bg from '../assets/PepsiCoBG.png';
 
@@ -15,8 +14,6 @@ export default function Landing() {
   const [savedFiles, setSavedFiles] = React.useState<{ key: string; name: string }[]>([]);
   const [selectedFile, setSelectedFile] = React.useState<File | null>(null);
   const [selectedName, setSelectedName] = React.useState<string>('');
-  const [parsedData, setParsedData] = React.useState<TableRelation[] | null>(null);
-  const [modalOpen, setModalOpen] = React.useState(false);
   const [isLoading, setIsLoading] = React.useState(false);
 
   React.useEffect(() => {
@@ -42,47 +39,24 @@ export default function Landing() {
     setIsLoading(true);
     try {
       const parsed = (await parseCsvFile(file)) as TableRelation[];
-      setParsedData(parsed);
-      setModalOpen(true);
+      
+      const key = `${file.name}::${file.size}::${file.lastModified}`;
+      
+      // Save the full original data to IndexedDB
+      await setIndexedDBItem(`original::${key}`, parsed, 'csv');
+      
+      // Don't save filtered data yet - user will select tables on graph page
+      // Just store a reference in localStorage
+      localStorage.setItem(`csv_ref::${key}`, file.name);
+      
+      // Navigate directly to graph page
+      navigate(`/Graph/${encodeURIComponent(key)}`);
     } catch (error) {
       console.error('Error parsing CSV:', error);
       alert('Error parsing CSV file. Please check the file format.');
     } finally {
       setIsLoading(false);
     }
-  };
-
-
-
-  const handleFilterSubmit = (selectedLevels: string[], selectedTypes: string[], applyNeighborhood: boolean) => {
-    if (!parsedData || !selectedFile) return;
-    
-    // Apply filtering with limit (including neighborhood if enabled)
-    const filteredData = filterDataWithLimit(parsedData, {
-      selectedLevels,
-      selectedTypes,
-      applyNeighborhood,
-    });
-
-    const key = `${selectedFile.name}::${selectedFile.size}::${selectedFile.lastModified}`;
-    
-    // Save filtered data to localStorage
-    try {
-      localStorage.setItem(`uploaded_csv::${key}`, JSON.stringify(filteredData));
-      
-      // If neighborhood is enabled, save the selected table names as initial neighborhood filter
-      if (applyNeighborhood && selectedLevels.length > 0) {
-        localStorage.setItem(`initial_neighborhood::${key}`, JSON.stringify(selectedLevels));
-      } else {
-        // Clear any previous neighborhood setting for this file
-        localStorage.removeItem(`initial_neighborhood::${key}`);
-      }
-    } catch (error) {
-      console.error('Error saving to localStorage:', error);
-    }
-    
-    setModalOpen(false);
-    navigate(`/Graph/${encodeURIComponent(key)}`);
   };
 
   return (
@@ -128,16 +102,6 @@ export default function Landing() {
           </Button>
         </Box>
         {selectedName && <Typography variant="body2" sx={{ mb: 2, color: '#444' }}>Selected: {selectedName}</Typography>}
-
-        {/* Filter Modal */}
-        {parsedData && (
-          <FilterModal
-            open={modalOpen}
-            onClose={() => setModalOpen(false)}
-            data={parsedData}
-            onSubmit={handleFilterSubmit}
-          />
-        )}
 
         <Typography variant="subtitle1" sx={{ mt: 2, mb: 1, color: '#333' }}>Previously uploaded files</Typography>
         <List>

@@ -23,11 +23,19 @@ import {
   TableCell,
   TableHead,
   TableRow,
+  Autocomplete,
+  TextField,
+  Chip,
+  Popper,
+  Checkbox,
+  ListItemText,
 } from "@mui/material";
 import FilterSelect from './FilterSelect';
 
 import GraphModel, { TableRelation } from './graph/graphModel';
 import { registerTypesFromData, getColorFor, getAllTypeMaps } from '../utils/typeColors';
+import { filterDataWithLimit, getDataStats } from '../utils/filterData';
+import { setItem as setIndexedDBItem } from '../utils/indexedDB';
 import getLayoutedElements from './graph/layout';
 import simplifyFit from './simplifyFit';
 import { useNodeManualOperations } from './NodeManualOperations';
@@ -58,7 +66,7 @@ const PEPSI_BG_LIGHT = '#EAF3FF';
 // GraphModel provides traversal utilities for the data
 // TooltipContent renders node tooltip details
 
-const GraphInner = ({ data, fileKey, initialNeighborhood }: { data: TableRelation[]; fileKey?: string | null; initialNeighborhood?: string[] }) => {
+const GraphInner = ({ data, fileKey, initialNeighborhood, originalData }: { data: TableRelation[]; fileKey?: string | null; initialNeighborhood?: string[]; originalData?: TableRelation[] }) => {
   const { fitView } = useReactFlow();
   const getStorageKey = (base: string) => (fileKey ? `${base}::${fileKey}` : base);
   const nodeWidth = 180;
@@ -69,6 +77,14 @@ const GraphInner = ({ data, fileKey, initialNeighborhood }: { data: TableRelatio
   useEffect(() => {
     graphModelRef.current = new GraphModel(data || []);
   }, [data]);
+  
+  const fullOriginalData = originalData || data; // Fallback to current data if no original
+  
+  // Lazy loading state for neighborhood dropdown
+  const ITEMS_PER_PAGE = 50;
+  const [displayedNeighborhoodCount, setDisplayedNeighborhoodCount] = useState(ITEMS_PER_PAGE);
+  const neighborhoodListboxRef = useRef<HTMLUListElement | null>(null);
+  const lastScrollTopNeighborhood = useRef<number>(0);
   // Debounce utility
   function debounce(func: (...args: any[]) => void, wait: number) {
     let timeout: any;
@@ -209,7 +225,8 @@ const GraphInner = ({ data, fileKey, initialNeighborhood }: { data: TableRelatio
 
   // Neighborhood filter (multi-select: choose nodes to focus on their complete lineage - all ancestors and descendants)
   const [neighborhoodNodes, setNeighborhoodNodes] = useState<string[]>([]);
-  const [selectedNeighborhoodNodes, setSelectedNeighborhoodNodes] = useState<string[]>([]);
+  const [selectedNeighborhoodNodes, setSelectedNeighborhoodNodes] = useState<string[]>(initialNeighborhood || []);
+  const [pendingNeighborhoodNodes, setPendingNeighborhoodNodes] = useState<string[]>(initialNeighborhood || []);
   // Track the currently filtered neighborhood node for toggle functionality
   const [currentNeighborhoodFilterNodeId, setCurrentNeighborhoodFilterNodeId] = useState<string | null>(null);
   const [canUndo, setCanUndo] = useState<boolean>(false);
@@ -804,26 +821,154 @@ const GraphInner = ({ data, fileKey, initialNeighborhood }: { data: TableRelatio
     return opts;
   }, [data, filters, columns, neighborhoodNodes]);
 
-  // Available neighborhood options should respect current column filters (ignore neighborhood selection)
+  // Available neighborhood options from original full dataset (all table names)
   const neighborhoodOptions = useMemo(() => {
     try {
-      const base = data.filter((row) =>
-        Object.entries(filters).every(([col, val]) => {
-          if (!val || (Array.isArray(val) && val.length === 0)) return true;
-          if (Array.isArray(val)) return val.includes(String(row[col]));
-          return String(row[col]) === val;
-        })
-      );
       const set = new Set<string>();
-      base.forEach((r) => {
+      fullOriginalData.forEach((r) => {
         if (r.parentTableName) set.add(r.parentTableName);
         if (r.childTableName) set.add(r.childTableName);
       });
       return Array.from(set).sort();
     } catch {
-      return graphModelRef.current?.getAllNodes() || [];
+      return [];
     }
-  }, [data, filters]);
+  }, [fullOriginalData]);
+  
+  // Build adjacency maps once for fast lookups (prevents repeated array filtering)
+  const relationshipMaps = useMemo(() => {
+    const parentToChildren = new Map<string, Set<string>>();
+    const childToParents = new Map<string, Set<string>>();
+    
+    fullOriginalData.forEach((row) => {
+      const parent = row.parentTableName;
+      const child = row.childTableName;
+      
+      if (!parentToChildren.has(parent)) {
+        parentToChildren.set(parent, new Set());
+      }
+      parentToChildren.get(parent)!.add(child);
+      
+      if (!childToParents.has(child)) {
+        childToParents.set(child, new Set());
+      }
+      childToParents.get(child)!.add(parent);
+    });
+    
+    return { parentToChildren, childToParents };
+  }, [fullOriginalData]);
+  
+  // Optimized lineage calculation using pre-built maps
+  const getCompleteLineageForEstimate = useCallback((nodeId: string): { parents: Set<string>, children: Set<string> } => {
+    const allParents = new Set<string>();
+    const allChildren = new Set<string>();
+    const visited = new Set<string>();
+    
+    // Recursive function to traverse all ancestors using map
+    const traverseAncestors = (id: string) => {
+      if (visited.has(id)) return;
+      visited.add(id);
+      
+      const parents = relationshipMaps.childToParents.get(id);
+      if (parents) {
+        parents.forEach(parentId => {
+          allParents.add(parentId);
+          traverseAncestors(parentId);
+        });
+      }
+    };
+    
+    // Recursive function to traverse all descendants using map
+    const traverseDescendants = (id: string) => {
+      if (visited.has(id)) return;
+      visited.add(id);
+      
+      const children = relationshipMaps.parentToChildren.get(id);
+      if (children) {
+        children.forEach(childId => {
+          allChildren.add(childId);
+          traverseDescendants(childId);
+        });
+      }
+    };
+    
+    visited.clear();
+    traverseAncestors(nodeId);
+    
+    visited.clear();
+    traverseDescendants(nodeId);
+    
+    return { parents: allParents, children: allChildren };
+  }, [relationshipMaps]);
+  
+  // Calculate estimated count using optimized map-based lookups
+  const estimatedCount = useMemo(() => {
+    if (pendingNeighborhoodNodes.length === 0) {
+      return { nodeCount: 0, edgeCount: 0, isWithinLimit: true };
+    }
+    
+    try {
+      // Calculate allowed nodes with complete lineage
+      const completeNeighborhood = new Set<string>();
+      
+      pendingNeighborhoodNodes.forEach(nodeId => {
+        completeNeighborhood.add(nodeId);
+        
+        const { parents, children } = getCompleteLineageForEstimate(nodeId);
+        
+        parents.forEach(a => completeNeighborhood.add(a));
+        children.forEach(d => completeNeighborhood.add(d));
+      });
+      
+      // Count edges where both parent and child are in the neighborhood
+      let edgeCount = 0;
+      fullOriginalData.forEach((row) => {
+        if (completeNeighborhood.has(row.parentTableName) && completeNeighborhood.has(row.childTableName)) {
+          edgeCount++;
+        }
+      });
+      
+      const nodeCount = completeNeighborhood.size;
+      const isWithinLimit = nodeCount <= 4000 && edgeCount <= 4000;
+      
+      return { nodeCount, edgeCount, isWithinLimit };
+    } catch (error) {
+      console.error('Error calculating estimate:', error);
+      return { nodeCount: 0, edgeCount: 0, isWithinLimit: true };
+    }
+  }, [pendingNeighborhoodNodes, fullOriginalData, getCompleteLineageForEstimate]);
+  
+  // Custom filter function for neighborhood that limits results
+  const neighborhoodFilterOptions = useCallback((options: string[], state: any) => {
+    const inputValue = state.inputValue.toLowerCase();
+    if (!inputValue) {
+      return options.slice(0, displayedNeighborhoodCount);
+    }
+    const filtered = options.filter(option => 
+      option.toLowerCase().includes(inputValue)
+    );
+    return filtered.slice(0, displayedNeighborhoodCount);
+  }, [displayedNeighborhoodCount]);
+  
+  // Scroll handler for lazy loading in neighborhood dropdown
+  const handleNeighborhoodScroll = useCallback((event: React.UIEvent<HTMLUListElement>) => {
+    const listboxNode = event.currentTarget;
+    lastScrollTopNeighborhood.current = listboxNode.scrollTop;
+    const position = listboxNode.scrollTop + listboxNode.clientHeight;
+    const bottom = listboxNode.scrollHeight;
+    
+    if (position >= bottom - 100 && displayedNeighborhoodCount < neighborhoodOptions.length) {
+      setDisplayedNeighborhoodCount(prev => {
+        const newCount = Math.min(prev + ITEMS_PER_PAGE, neighborhoodOptions.length);
+        requestAnimationFrame(() => {
+          if (neighborhoodListboxRef.current) {
+            neighborhoodListboxRef.current.scrollTop = lastScrollTopNeighborhood.current;
+          }
+        });
+        return newCount;
+      });
+    }
+  }, [displayedNeighborhoodCount, neighborhoodOptions.length]);
 
   // 🔹 Hide node function - using NodeManualOperations hook
   const hideNode = nodeManualOps.hideNode;
@@ -1736,59 +1881,137 @@ const GraphInner = ({ data, fileKey, initialNeighborhood }: { data: TableRelatio
       {/* Neighborhood ribbon (below filters) */}
       <Box sx={{ px: 3, py: 2, background: '#fff' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2 }}>
-          <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-            <Box sx={{ minWidth: 300 }}>
-              <FilterSelect
-                title="Neighborhood"
+          <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', flex: 1 }}>
+            <Box sx={{ minWidth: 400, maxWidth: 600, flex: 1 }}>
+              <Typography variant="subtitle2" sx={{ mb: 0.5, color: '#333', fontWeight: 'bold' }}>Select Tables (Add/Edit)</Typography>
+              <Autocomplete
+                multiple
                 options={neighborhoodOptions}
-                value={selectedNeighborhoodNodes}
-                onChange={async (vals) => {
-                  const newSelectedNeighborhoodNodes = vals || [];
-                  let newNeighborhoodNodes: string[] = [];
-                  let newCurrentNeighborhoodFilterNodeId: string | null = null;
-                  
-                  setSelectedNeighborhoodNodes(newSelectedNeighborhoodNodes);
-                  
-                  if (!vals || vals.length === 0) {
-                    setNeighborhoodNodes([]);
-                    setCurrentNeighborhoodFilterNodeId(null);
-                    // After clearing neighborhood filter, just fit to screen
-                    setTimeout(() => {
-                      try { fitView({ duration: 800 }); } catch { }
-                    }, 200);
-                  } else {
-                    // Build complete neighborhood for all selected nodes
-                    const completeNeighborhood = new Set<string>();
-                    
-                    vals.forEach(nodeId => {
-                      // Add the selected node itself
-                      completeNeighborhood.add(nodeId);
-                      
-                      // Get complete lineage for each selected node
-                      const { parents, children } = getImmediateFamily(nodeId);
-                      
-                      // Add all ancestors and descendants
-                      parents.forEach(parent => completeNeighborhood.add(parent));
-                      children.forEach(child => completeNeighborhood.add(child));
+                value={pendingNeighborhoodNodes}
+                onChange={(_, newValue) => {
+                  setPendingNeighborhoodNodes(newValue || []);
+                }}
+                disableCloseOnSelect
+                filterOptions={neighborhoodFilterOptions}
+                PopperComponent={(props) => <Popper {...props} style={{ width: 'auto' }} placement="bottom-start" />}
+                ListboxProps={{
+                  style: { maxHeight: '400px' },
+                  onScroll: handleNeighborhoodScroll,
+                  ref: neighborhoodListboxRef,
+                }}
+                renderOption={(props, option, { selected }) => (
+                  <li {...props}>
+                    <Checkbox
+                      checked={selected}
+                      style={{ marginRight: 8 }}
+                    />
+                    <ListItemText primary={option} />
+                  </li>
+                )}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    placeholder="Search and select table names..."
+                    variant="outlined"
+                    size="small"
+                  />
+                )}
+                renderTags={(value, getTagProps) =>
+                  value.map((option, index) => {
+                    const { key, ...chipProps } = getTagProps({ index });
+                    return (
+                      <Chip
+                        key={key}
+                        label={String(option)}
+                        {...chipProps}
+                        color="primary"
+                        size="small"
+                      />
+                    );
+                  })
+                }
+                ListboxComponent={(props) => (
+                  <ul {...props}>
+                    {props.children}
+                    {displayedNeighborhoodCount < neighborhoodOptions.length && (
+                      <li style={{ padding: '8px', textAlign: 'center', color: '#666', fontSize: '12px' }}>
+                        Showing {Math.min(displayedNeighborhoodCount, (props.children as any[])?.length || 0)} of {neighborhoodOptions.length} - Scroll for more
+                      </li>
+                    )}
+                  </ul>
+                )}
+              />
+              {pendingNeighborhoodNodes && pendingNeighborhoodNodes.length > 0 && (
+                <Box sx={{ mt: 0.5 }}>
+                  <Typography variant="caption" sx={{ color: '#666', display: 'block' }}>
+                    {pendingNeighborhoodNodes.length} table{pendingNeighborhoodNodes.length > 1 ? 's' : ''} selected (showing complete lineage)
+                  </Typography>
+                  <Typography 
+                    variant="caption" 
+                    sx={{ 
+                      color: estimatedCount.isWithinLimit ? '#1976d2' : '#d32f2f', 
+                      display: 'block',
+                      fontWeight: estimatedCount.isWithinLimit ? 'normal' : 'bold'
+                    }}
+                  >
+                    Estimated result: <strong>{estimatedCount.nodeCount} nodes</strong> and <strong>{estimatedCount.edgeCount} edges</strong>
+                    {!estimatedCount.isWithinLimit && ' (Exceeds 4000 limit!)'}
+                  </Typography>
+                </Box>
+              )}
+            </Box>
+            <Button 
+              variant="contained" 
+              disabled={
+                JSON.stringify(pendingNeighborhoodNodes) === JSON.stringify(selectedNeighborhoodNodes) ||
+                (pendingNeighborhoodNodes.length > 0 && !estimatedCount.isWithinLimit)
+              }
+              onClick={async () => {
+                if (!fileKey) return;
+                
+                const selectedTables = pendingNeighborhoodNodes || [];
+                
+                if (selectedTables.length === 0) {
+                  // Clear selection - show all data
+                  try {
+                    await setIndexedDBItem(fileKey, fullOriginalData, 'csv');
+                    localStorage.removeItem(`initial_neighborhood::${fileKey}`);
+                    window.location.reload();
+                  } catch (error) {
+                    console.error('Error clearing filters:', error);
+                  }
+                } else {
+                  // Re-filter data with selected tables and their complete lineage
+                  try {
+                    const newFilteredData = filterDataWithLimit(fullOriginalData, {
+                      selectedLevels: selectedTables,
+                      selectedTypes: [],
+                      applyNeighborhood: true,
                     });
                     
-                    newNeighborhoodNodes = Array.from(completeNeighborhood);
-                    newCurrentNeighborhoodFilterNodeId = vals.length === 1 ? vals[0] : null;
+                    // Save filtered data to IndexedDB
+                    await setIndexedDBItem(fileKey, newFilteredData, 'csv');
                     
-                    setNeighborhoodNodes(newNeighborhoodNodes);
-                    setCurrentNeighborhoodFilterNodeId(newCurrentNeighborhoodFilterNodeId);
+                    // Save neighborhood metadata
+                    localStorage.setItem(`initial_neighborhood::${fileKey}`, JSON.stringify(selectedTables));
+                    
+                    // Reload to apply new filters
+                    window.location.reload();
+                  } catch (error) {
+                    console.error('Error applying table selection:', error);
+                    alert('Error applying table selection. Please try again.');
                   }
-                  
-                  // Do not push history here; atomic simplify sequence will save once at the end
-                  
-                  // Fit view after neighborhood change
-                  setTimeout(() => {
-                    fitView({ duration: 800 });
-                  }, 200); // Give time for state updates
-                }}
-              />
-            </Box>
-            <Typography variant="body2" sx={{ color: '#666' }}>{selectedNeighborhoodNodes && selectedNeighborhoodNodes.length > 0 ? `Neighborhood: ${selectedNeighborhoodNodes.join(', ')}` : 'Showing all nodes'}</Typography>
+                }
+              }}
+              sx={{ 
+                fontWeight: 'bold', 
+                backgroundColor: PEPSI_BLUE, 
+                '&:hover': { backgroundColor: '#00356a' },
+                minWidth: '100px'
+              }}
+            >
+              APPLY
+            </Button>
           </Box>
           <Button variant="contained" onClick={handleResetFilters} sx={{ fontWeight: 'bold', backgroundColor: PEPSI_BLUE, '&:hover': { backgroundColor: '#00356a' } }}>
             <SettingsBackupRestoreOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Reset All Filters
@@ -1938,8 +2161,24 @@ const GraphInner = ({ data, fileKey, initialNeighborhood }: { data: TableRelatio
         background: "#fff",
         width: 'calc(100% - 32px)',
         height: '80vh',
-        position: 'relative'
+        position: 'relative',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center'
       }}>
+        {data.length === 0 ? (
+          <Box sx={{ textAlign: 'center', p: 4 }}>
+            <Typography variant="h5" sx={{ color: PEPSI_BLUE, fontWeight: 'bold', mb: 2 }}>
+              Welcome to Lineage Visualization
+            </Typography>
+            <Typography variant="body1" sx={{ color: '#666', mb: 1 }}>
+              Please select table names from the <strong>"Select Tables (Add/Edit)"</strong> dropdown above to visualize the data lineage graph.
+            </Typography>
+            <Typography variant="body2" sx={{ color: '#999', mt: 2 }}>
+              💡 Tip: You can select multiple tables to see their complete lineage (ancestors and descendants).
+            </Typography>
+          </Box>
+        ) : (
         <ReactFlow
           key={`normal-reactflow-${refreshKey}`}
           nodes={visualNodes}
@@ -1992,9 +2231,11 @@ const GraphInner = ({ data, fileKey, initialNeighborhood }: { data: TableRelatio
             />
           </Panel>
         </ReactFlow>
+        )}
       </Box>
 
       {/* 🔹 Visible Nodes Table */}
+      {data.length > 0 && (
       <Box sx={{
         mx: 2,
         my: 4,
@@ -2092,14 +2333,15 @@ const GraphInner = ({ data, fileKey, initialNeighborhood }: { data: TableRelatio
           </Box>
         </Box>
       </Box>
+      )}
       </div>
     </>
   );
 };
 
-const Graph = ({ data, fileKey, initialNeighborhood }: { data: TableRelation[]; fileKey?: string | null; initialNeighborhood?: string[] }) => (
+const Graph = ({ data, fileKey, initialNeighborhood, originalData }: { data: TableRelation[]; fileKey?: string | null; initialNeighborhood?: string[]; originalData?: TableRelation[] }) => (
   <ReactFlowProvider>
-    <GraphInner data={data} fileKey={fileKey} initialNeighborhood={initialNeighborhood} />
+    <GraphInner data={data} fileKey={fileKey} initialNeighborhood={initialNeighborhood} originalData={originalData} />
   </ReactFlowProvider>
 );
 
