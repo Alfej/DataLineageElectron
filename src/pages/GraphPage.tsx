@@ -9,6 +9,7 @@ export default function GraphPage() {
   const { fileKey } = useParams<{ fileKey: string }>();
   const navigate = useNavigate();
   const [data, setData] = useState<TableRelation[]>([]);
+  const [initialNeighborhood, setInitialNeighborhood] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -29,8 +30,6 @@ export default function GraphPage() {
       }
 
       // Next, try to find a saved raw CSV path or graph_node_state scoped to this fileKey
-      // If there is a graph_node_state::<fileKey> it is position data; we still need the CSV rows.
-      // Try to locate any localStorage key that includes the fileKey and contains a CSV-like array
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i) as string;
         if (!k) continue;
@@ -51,6 +50,18 @@ export default function GraphPage() {
       } catch (e) {
         setData([]);
       }
+      
+      // Load initial neighborhood filter if it exists
+      try {
+        const neighborhoodStored = localStorage.getItem(`initial_neighborhood::${decoded}`);
+        if (neighborhoodStored) {
+          const parsed = JSON.parse(neighborhoodStored);
+          setInitialNeighborhood(Array.isArray(parsed) ? parsed : []);
+        }
+      } catch (e) {
+        setInitialNeighborhood([]);
+      }
+      
       setLoading(false);
     };
     load();
@@ -61,7 +72,7 @@ export default function GraphPage() {
 
   return (
     <Box sx={{ width: '100vw', height: '100vh' }}>
-      <Graph data={data} fileKey={decodeURIComponent(fileKey)} />
+      <Graph data={data} fileKey={decodeURIComponent(fileKey)} initialNeighborhood={initialNeighborhood} />
     </Box>
   );
 }

@@ -58,7 +58,7 @@ const PEPSI_BG_LIGHT = '#EAF3FF';
 // GraphModel provides traversal utilities for the data
 // TooltipContent renders node tooltip details
 
-const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | null }) => {
+const GraphInner = ({ data, fileKey, initialNeighborhood }: { data: TableRelation[]; fileKey?: string | null; initialNeighborhood?: string[] }) => {
   const { fitView } = useReactFlow();
   const getStorageKey = (base: string) => (fileKey ? `${base}::${fileKey}` : base);
   const nodeWidth = 180;
@@ -231,6 +231,9 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
   
   // Control flag to track when filters are being reset
   const [isResetOperation, setIsResetOperation] = useState<boolean>(false);
+  
+  // Control flag to track if initial simplification has been performed
+  const [hasInitialSimplified, setHasInitialSimplified] = useState<boolean>(false);
 
   // Pagination for the table
   const [page, setPage] = useState<number>(1);
@@ -445,9 +448,29 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
         setFilters(defaultFilters);
         localStorage.setItem(getStorageKey("current_Filters_state"), JSON.stringify(defaultFilters));
       }
+      
+      // Apply initial neighborhood filter from CSV upload selection
+      if (initialNeighborhood && initialNeighborhood.length > 0) {
+        const completeNeighborhood = new Set<string>();
+        
+        initialNeighborhood.forEach(nodeId => {
+          completeNeighborhood.add(nodeId);
+          
+          // Get complete lineage for each selected node
+          const ancestors = getAllAncestors(nodeId);
+          const descendants = getAllDescendants(nodeId);
+          
+          ancestors.forEach(a => completeNeighborhood.add(a));
+          descendants.forEach(d => completeNeighborhood.add(d));
+        });
+        
+        setSelectedNeighborhoodNodes(initialNeighborhood);
+        setNeighborhoodNodes(Array.from(completeNeighborhood));
+        setCurrentNeighborhoodFilterNodeId(initialNeighborhood.length === 1 ? initialNeighborhood[0] : null);
+      }
       // ensure initial history snapshot once positions are available later
     }
-  }, [data]);
+  }, [data, initialNeighborhood]);
 
   // 🔹 Initialize history when component loads with data
   useEffect(() => {
@@ -498,6 +521,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
               details: data.filter((rel) => rel.parentTableName === parent || rel.childTableName === parent),
             },
             position: { x: 0, y: 0 },
+            zIndex: 1,
             style: { padding: 10, borderRadius: '8px', border: '1px solid #999', background: getColorFor('table', row.parentTableType) || '#fff' },
           });
         }
@@ -510,6 +534,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
               details: data.filter((rel) => rel.parentTableName === child || rel.childTableName === child),
             },
             position: { x: 0, y: 0 },
+            zIndex: 1,
             style: { padding: 10, borderRadius: '8px', border: '1px solid #999', background: getColorFor('table', row.childTableType) || '#fff' },
           });
         }
@@ -901,6 +926,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
             ),
           },
           position: positions[parent] !== undefined ? positions[parent] : nodes.find(n => n.id === parent)?.position || { x: 0, y: 0 },
+          zIndex: 1,
           style: {
             padding: 10,
             borderRadius: "8px",
@@ -932,6 +958,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
             ),
           },
           position: positions[child] !== undefined ? positions[child] : nodes.find(n => n.id === child)?.position || { x: 0, y: 0 },
+          zIndex: 1,
           style: {
             padding: 10,
             borderRadius: "8px",
@@ -1066,6 +1093,46 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
     };
     runInitialLayout();
   }, [filteredData, hiddenNodes, positions, layoutDirection]);
+
+  // 🔹 Auto-simplify on initial load after positions are set
+  useEffect(() => {
+    // Only run once after initial layout is complete
+    if (!hasInitialSimplified && nodes.length > 0 && Object.keys(positions).length > 0 && !isAutoSimplifying && !isUndoRedoOperation) {
+      const timeoutId = setTimeout(async () => {
+        try {
+          setHasInitialSimplified(true);
+          const result = await simplifyFit({
+            nodes,
+            edges,
+            hiddenNodes,
+            layoutDirection,
+            positions,
+            setPositions,
+            setNodes,
+            filters,
+            neighborhoodNodes,
+            selectedNeighborhoodNodes,
+            currentNeighborhoodFilterNodeId,
+            debouncedSaveGraphState,
+            data,
+            filteredData,
+            fitView,
+            fitViewOptions: { duration: 800 },
+            skipHistory: true, // Don't save to history for initial simplification
+            skipSaveState: false
+          });
+          
+          if (!result.success) {
+            console.warn('Initial auto-simplify failed:', result.message);
+          }
+        } catch (error) {
+          console.warn('Initial auto-simplify error:', error);
+        }
+      }, 500); // Small delay to ensure layout is complete
+      
+      return () => clearTimeout(timeoutId);
+    }
+  }, [nodes, edges, positions, hasInitialSimplified, isAutoSimplifying, isUndoRedoOperation, hiddenNodes, layoutDirection, setPositions, setNodes, filters, neighborhoodNodes, selectedNeighborhoodNodes, currentNeighborhoodFilterNodeId, debouncedSaveGraphState, data, filteredData, fitView]);
 
   // 🔹 Track node drag and update positions - using NodeManualOperations hook
   const handleNodesChange = nodeManualOps.handleNodesChange;
@@ -1588,6 +1655,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
             minZoom={0.001}
             maxZoom={5}
             fitView
+            elevateNodesOnSelect={true}
             style={{ width: '100%', height: '100%' }}
           >
             <Background color="#e3f2fd" />
@@ -1889,6 +1957,7 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
           minZoom={0.001}
           maxZoom={5}
           fitView
+          elevateNodesOnSelect={true}
         >
           <Background color="#e3f2fd" />
           <AnimatedControls 
@@ -2028,9 +2097,9 @@ const GraphInner = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string
   );
 };
 
-const Graph = ({ data, fileKey }: { data: TableRelation[]; fileKey?: string | null }) => (
+const Graph = ({ data, fileKey, initialNeighborhood }: { data: TableRelation[]; fileKey?: string | null; initialNeighborhood?: string[] }) => (
   <ReactFlowProvider>
-    <GraphInner data={data} fileKey={fileKey} />
+    <GraphInner data={data} fileKey={fileKey} initialNeighborhood={initialNeighborhood} />
   </ReactFlowProvider>
 );
 

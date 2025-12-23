@@ -30,12 +30,16 @@ export const getLayoutedElements = async (
     id: 'root',
     layoutOptions: {
       'elk.algorithm': 'layered',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '80',
-      'elk.spacing.nodeNode': '50',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '150',
+      'elk.spacing.nodeNode': '100',
       'elk.direction': elkDirection,
       // Additional options to handle varying node heights
       'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
       'elk.layered.unnecessaryBendpoints': 'true',
+      'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
+      'elk.separateConnectedComponents': 'false',
+      'elk.layered.compaction.postCompaction.strategy': 'EDGE_LENGTH',
+      'elk.spacing.componentComponent': '100',
     },
     children: nodes.map((n) => ({
       id: n.id,
