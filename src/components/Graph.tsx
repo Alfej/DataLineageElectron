@@ -81,10 +81,18 @@ const GraphInner = ({ data, fileKey, initialNeighborhood, originalData }: { data
   const fullOriginalData = originalData || data; // Fallback to current data if no original
   
   // Lazy loading state for neighborhood dropdown
-  const ITEMS_PER_PAGE = 50;
+  const ITEMS_PER_PAGE = 50; // Items to show per batch
+  const MAX_SEARCH_RESULTS = 1000; // Maximum results to show in search
+  const MIN_SEARCH_LENGTH = 2; // Minimum characters before searching (critical for large datasets)
   const [displayedNeighborhoodCount, setDisplayedNeighborhoodCount] = useState(ITEMS_PER_PAGE);
   const neighborhoodListboxRef = useRef<HTMLUListElement | null>(null);
   const lastScrollTopNeighborhood = useRef<number>(0);
+  const isLoadingMoreItems = useRef<boolean>(false);
+  
+  // Debounced search state for neighborhood dropdown
+  const [neighborhoodSearchTerm, setNeighborhoodSearchTerm] = useState('');
+  const neighborhoodSearchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
   // Debounce utility
   function debounce(func: (...args: any[]) => void, wait: number) {
     let timeout: any;
@@ -93,6 +101,15 @@ const GraphInner = ({ data, fileKey, initialNeighborhood, originalData }: { data
       timeout = setTimeout(() => func(...args), wait);
     };
   }
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (neighborhoodSearchTimeoutRef.current) {
+        clearTimeout(neighborhoodSearchTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // Debounced unified graph state setter
   const debouncedSaveGraphState = useRef(
@@ -938,37 +955,67 @@ const GraphInner = ({ data, fileKey, initialNeighborhood, originalData }: { data
     }
   }, [pendingNeighborhoodNodes, fullOriginalData, getCompleteLineageForEstimate]);
   
-  // Custom filter function for neighborhood that limits results
-  const neighborhoodFilterOptions = useCallback((options: string[], state: any) => {
-    const inputValue = state.inputValue.toLowerCase();
-    if (!inputValue) {
-      return options.slice(0, displayedNeighborhoodCount);
+  // Pre-filter neighborhood options based on search term (memoized for performance)
+  const filteredNeighborhoodOptions = useMemo(() => {
+    const searchTerm = neighborhoodSearchTerm.toLowerCase().trim();
+    
+    // If no search term or too short, return paginated options
+    if (!searchTerm || searchTerm.length < MIN_SEARCH_LENGTH) {
+      return neighborhoodOptions.slice(0, displayedNeighborhoodCount);
     }
-    const filtered = options.filter(option => 
-      option.toLowerCase().includes(inputValue)
-    );
-    return filtered.slice(0, displayedNeighborhoodCount);
-  }, [displayedNeighborhoodCount]);
+    
+    // Efficient search with early termination for large datasets
+    const filtered: string[] = [];
+    const limit = MAX_SEARCH_RESULTS;
+    
+    for (let i = 0; i < neighborhoodOptions.length && filtered.length < limit; i++) {
+      const option = neighborhoodOptions[i];
+      if (option.toLowerCase().includes(searchTerm)) {
+        filtered.push(option);
+      }
+    }
+    
+    return filtered;
+  }, [neighborhoodOptions, neighborhoodSearchTerm, displayedNeighborhoodCount]);
   
   // Scroll handler for lazy loading in neighborhood dropdown
   const handleNeighborhoodScroll = useCallback((event: React.UIEvent<HTMLUListElement>) => {
     const listboxNode = event.currentTarget;
-    lastScrollTopNeighborhood.current = listboxNode.scrollTop;
-    const position = listboxNode.scrollTop + listboxNode.clientHeight;
+    const currentScrollTop = listboxNode.scrollTop;
+    const position = currentScrollTop + listboxNode.clientHeight;
     const bottom = listboxNode.scrollHeight;
     
-    if (position >= bottom - 100 && displayedNeighborhoodCount < neighborhoodOptions.length) {
-      setDisplayedNeighborhoodCount(prev => {
-        const newCount = Math.min(prev + ITEMS_PER_PAGE, neighborhoodOptions.length);
-        requestAnimationFrame(() => {
-          if (neighborhoodListboxRef.current) {
-            neighborhoodListboxRef.current.scrollTop = lastScrollTopNeighborhood.current;
-          }
-        });
-        return newCount;
-      });
+    // Store reference for later restoration
+    neighborhoodListboxRef.current = listboxNode;
+    
+    if (position >= bottom - 50 && displayedNeighborhoodCount < neighborhoodOptions.length && !isLoadingMoreItems.current) {
+      // Save scroll position before loading
+      lastScrollTopNeighborhood.current = currentScrollTop;
+      isLoadingMoreItems.current = true;
+      
+      setDisplayedNeighborhoodCount(prev => 
+        Math.min(prev + ITEMS_PER_PAGE, neighborhoodOptions.length)
+      );
     }
   }, [displayedNeighborhoodCount, neighborhoodOptions.length]);
+
+  // Restore scroll position after more items are loaded
+  useEffect(() => {
+    if (isLoadingMoreItems.current && neighborhoodListboxRef.current) {
+      const listbox = neighborhoodListboxRef.current;
+      const savedPosition = lastScrollTopNeighborhood.current;
+      
+      // Wait for DOM to update, then restore position
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          if (listbox && savedPosition > 0) {
+            listbox.scrollTop = savedPosition;
+            isLoadingMoreItems.current = false;
+          }
+        }, 0);
+      });
+    }
+  }, [displayedNeighborhoodCount]);
 
   // 🔹 Hide node function - using NodeManualOperations hook
   const hideNode = nodeManualOps.hideNode;
@@ -1830,7 +1877,7 @@ const GraphInner = ({ data, fileKey, initialNeighborhood, originalData }: { data
       </Box>
 
       {/* Filters ribbon */}
-      <Box sx={{ px: 3, py: 2, background: PEPSI_BG_LIGHT, borderBottom: '1px solid rgba(0,0,0,0.06)' }}>
+      {/* <Box sx={{ px: 3, py: 2, background: PEPSI_BG_LIGHT, borderBottom: '1px solid rgba(0,0,0,0.06)' }}>
         <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
           {columns.map((col) => (
             <Box key={col} sx={{ minWidth: 220 }}>
@@ -1876,44 +1923,72 @@ const GraphInner = ({ data, fileKey, initialNeighborhood, originalData }: { data
             </Box>
           ))}
         </Box>
-      </Box>
+      </Box> */}
 
       {/* Neighborhood ribbon (below filters) */}
-      <Box sx={{ px: 3, py: 2, background: '#fff' }}>
+      <Box sx={{ px: 3, py: 2, background: PEPSI_BG_LIGHT, borderBottom: '1px solid rgba(0,0,0,0.06)' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2 }}>
           <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', flex: 1 }}>
             <Box sx={{ minWidth: 400, maxWidth: 600, flex: 1 }}>
               <Typography variant="subtitle2" sx={{ mb: 0.5, color: '#333', fontWeight: 'bold' }}>Select Tables (Add/Edit)</Typography>
               <Autocomplete
                 multiple
-                options={neighborhoodOptions}
+                options={filteredNeighborhoodOptions}
                 value={pendingNeighborhoodNodes}
                 onChange={(_, newValue) => {
                   setPendingNeighborhoodNodes(newValue || []);
                 }}
+                onInputChange={(_, newInputValue, reason) => {
+                  // Debounce the search to prevent lag on typing
+                  if (reason === 'input') {
+                    if (neighborhoodSearchTimeoutRef.current) {
+                      clearTimeout(neighborhoodSearchTimeoutRef.current);
+                    }
+                    neighborhoodSearchTimeoutRef.current = setTimeout(() => {
+                      setNeighborhoodSearchTerm(newInputValue);
+                      setDisplayedNeighborhoodCount(ITEMS_PER_PAGE);
+                    }, 300);
+                  } else if (reason === 'clear') {
+                    setNeighborhoodSearchTerm('');
+                    setDisplayedNeighborhoodCount(ITEMS_PER_PAGE);
+                  }
+                }}
                 disableCloseOnSelect
-                filterOptions={neighborhoodFilterOptions}
+                filterOptions={(x) => x}
+                clearOnBlur={false}
+                disableListWrap
+                limitTags={5}
+                ChipProps={{ size: 'small' }}
                 PopperComponent={(props) => <Popper {...props} style={{ width: 'auto' }} placement="bottom-start" />}
                 ListboxProps={{
-                  style: { maxHeight: '400px' },
+                  style: { maxHeight: '400px', overflow: 'auto' },
                   onScroll: handleNeighborhoodScroll,
-                  ref: neighborhoodListboxRef,
                 }}
-                renderOption={(props, option, { selected }) => (
-                  <li {...props}>
-                    <Checkbox
-                      checked={selected}
-                      style={{ marginRight: 8 }}
-                    />
-                    <ListItemText primary={option} />
-                  </li>
-                )}
+                renderOption={(props, option, { selected }) => {
+                  const { key, ...otherProps } = props as any;
+                  return (
+                    <li key={key} {...otherProps} style={{ display: 'flex', alignItems: 'center', padding: '6px 12px' }}>
+                      <Checkbox
+                        checked={selected}
+                        size="small"
+                        style={{ marginRight: 8, padding: 2 }}
+                      />
+                      <ListItemText 
+                        primary={option} 
+                        primaryTypographyProps={{ 
+                          style: { fontSize: '0.875rem' } 
+                        }}
+                      />
+                    </li>
+                  );
+                }}
                 renderInput={(params) => (
                   <TextField
                     {...params}
-                    placeholder="Search and select table names..."
+                    placeholder={neighborhoodOptions.length > 10000 ? "Type at least 2 characters to search..." : "Search and select table names..."}
                     variant="outlined"
                     size="small"
+                    helperText={neighborhoodOptions.length > 10000 ? `${neighborhoodOptions.length.toLocaleString()} tables available. Type to search.` : undefined}
                   />
                 )}
                 renderTags={(value, getTagProps) =>
@@ -1930,16 +2005,6 @@ const GraphInner = ({ data, fileKey, initialNeighborhood, originalData }: { data
                     );
                   })
                 }
-                ListboxComponent={(props) => (
-                  <ul {...props}>
-                    {props.children}
-                    {displayedNeighborhoodCount < neighborhoodOptions.length && (
-                      <li style={{ padding: '8px', textAlign: 'center', color: '#666', fontSize: '12px' }}>
-                        Showing {Math.min(displayedNeighborhoodCount, (props.children as any[])?.length || 0)} of {neighborhoodOptions.length} - Scroll for more
-                      </li>
-                    )}
-                  </ul>
-                )}
               />
               {pendingNeighborhoodNodes && pendingNeighborhoodNodes.length > 0 && (
                 <Box sx={{ mt: 0.5 }}>
@@ -2020,7 +2085,7 @@ const GraphInner = ({ data, fileKey, initialNeighborhood, originalData }: { data
       </Box>
 
       {/* Hidden nodes + Unhide Selected ribbon */}
-      <Box sx={{ px: 3, py: 2, background: PEPSI_BG_LIGHT, borderBottom: '1px solid rgba(0,0,0,0.06)' }}>
+      <Box sx={{ px: 3, py: 2, background: '#fff', borderBottom: '1px solid rgba(0,0,0,0.06)' }}>
         <Box sx={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 2 }}>
           <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-end' }}>
             <Box sx={{ minWidth: 320 }}>
@@ -2046,7 +2111,7 @@ const GraphInner = ({ data, fileKey, initialNeighborhood, originalData }: { data
       </Box>
 
       {/* Buttons ribbon (core actions) */}
-      <Box sx={{ px: 3, py: 2, background: '#fff', display: 'flex', gap: 2, alignItems: 'center', justifyContent: 'space-between' }}>
+      <Box sx={{ px: 3, py: 2, background: PEPSI_BG_LIGHT, display: 'flex', gap: 2, alignItems: 'center', justifyContent: 'space-between' }}>
         <Box sx={{ display: 'flex', alignItems: 'center' }}>
           <Typography
             variant="body2"
@@ -2234,106 +2299,106 @@ const GraphInner = ({ data, fileKey, initialNeighborhood, originalData }: { data
         )}
       </Box>
 
-      {/* 🔹 Visible Nodes Table */}
-      {data.length > 0 && (
-      <Box sx={{
-        mx: 2,
-        my: 4,
-        overflow: "auto",
-        minHeight: "50vh",
-        backgroundColor: "#fff",
-        borderRadius: 3,
-        boxShadow: 3,
-        p: 3
-      }}>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-          <Box>
-            <Typography variant="h6" sx={{ color: "#1976d2" }}>Visible Nodes Relationships</Typography>
-            <Typography variant="body2" sx={{ color: '#666', mt: 0.5 }}>
-              {(() => {
-                const visibleCount = filteredData.filter(row => !hiddenNodes.has(row.parentTableName) && !hiddenNodes.has(row.childTableName)).length;
-                return `${visibleCount} visible relationships`;
-              })()}
-            </Typography>
-          </Box>
-          <Button
-            variant="contained"
-            onClick={() => {
-              const visibleData = getVisibleTableData(filteredData, hiddenNodes);
-              const filename = fileKey ? `table-data-${fileKey}` : 'table-data';
-              exportToCSV(visibleData, filename);
-            }}
-            sx={{ 
-              fontWeight: 'bold', 
-              backgroundColor: '#4CAF50', 
-              '&:hover': { backgroundColor: '#388e3c' },
-              display: 'flex',
-              alignItems: 'center',
-              gap: 1
-            }}
-            disabled={filteredData.filter(row => !hiddenNodes.has(row.parentTableName) && !hiddenNodes.has(row.childTableName)).length === 0}
-          >
-            <DownloadOutlinedIcon fontSize="small" />
-            Download CSV
-          </Button>
-        </Box>
-        <Box sx={{
-          border: 1,
-          borderColor: 'divider',
-          borderRadius: 1,
-          overflow: "auto"
-        }}>
-          <Table size="small" sx={{ minWidth: 650 }}>
-            <TableHead>
-              <TableRow sx={{ backgroundColor: PEPSI_BLUE }}>
-                <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Parent Node</TableCell>
-                <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Parent Type</TableCell>
-                <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Relationship</TableCell>
-                <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Child Node</TableCell>
-                <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Child Type</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {(() => {
-                const visible = filteredData.filter(row => !hiddenNodes.has(row.parentTableName) && !hiddenNodes.has(row.childTableName));
-                const totalPages = Math.max(1, Math.ceil(visible.length / rowsPerPage));
-                const current = Math.min(page, totalPages);
-                const start = (current - 1) * rowsPerPage;
-                const pageRows = visible.slice(start, start + rowsPerPage);
-                return pageRows.map((row, index) => (
-                  <TableRow
-                    key={start + index}
-                    sx={{ '&:nth-of-type(odd)': { backgroundColor: 'action.hover' }, '&:hover': { backgroundColor: '#e3f2fd' } }}
-                  >
-                    <TableCell>{row.parentTableName}</TableCell>
-                    <TableCell>{row.parentTableType}</TableCell>
-                    <TableCell>{row.relationship}</TableCell>
-                    <TableCell>{row.childTableName}</TableCell>
-                    <TableCell>{row.childTableType}</TableCell>
-                  </TableRow>
-                ));
-              })()}
-            </TableBody>
-          </Table>
-        </Box>
+      {/* 🔹 Visible Nodes Table
+      // {data.length > 0 && (
+      // <Box sx={{
+      //   mx: 2,
+      //   my: 4,
+      //   overflow: "auto",
+      //   minHeight: "50vh",
+      //   backgroundColor: "#fff",
+      //   borderRadius: 3,
+      //   boxShadow: 3,
+      //   p: 3
+      // }}>
+      //   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+      //     <Box>
+      //       <Typography variant="h6" sx={{ color: "#1976d2" }}>Visible Nodes Relationships</Typography>
+      //       <Typography variant="body2" sx={{ color: '#666', mt: 0.5 }}>
+      //         {(() => {
+      //           const visibleCount = filteredData.filter(row => !hiddenNodes.has(row.parentTableName) && !hiddenNodes.has(row.childTableName)).length;
+      //           return `${visibleCount} visible relationships`;
+      //         })()}
+      //       </Typography>
+      //     </Box>
+      //     <Button
+      //       variant="contained"
+      //       onClick={() => {
+      //         const visibleData = getVisibleTableData(filteredData, hiddenNodes);
+      //         const filename = fileKey ? `table-data-${fileKey}` : 'table-data';
+      //         exportToCSV(visibleData, filename);
+      //       }}
+      //       sx={{ 
+      //         fontWeight: 'bold', 
+      //         backgroundColor: '#4CAF50', 
+      //         '&:hover': { backgroundColor: '#388e3c' },
+      //         display: 'flex',
+      //         alignItems: 'center',
+      //         gap: 1
+      //       }}
+      //       disabled={filteredData.filter(row => !hiddenNodes.has(row.parentTableName) && !hiddenNodes.has(row.childTableName)).length === 0}
+      //     >
+      //       <DownloadOutlinedIcon fontSize="small" />
+      //       Download CSV
+      //     </Button>
+      //   </Box>
+      //   <Box sx={{
+      //     border: 1,
+      //     borderColor: 'divider',
+      //     borderRadius: 1,
+      //     overflow: "auto"
+      //   }}>
+      //     <Table size="small" sx={{ minWidth: 650 }}>
+      //       <TableHead>
+      //         <TableRow sx={{ backgroundColor: PEPSI_BLUE }}>
+      //           <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Parent Node</TableCell>
+      //           <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Parent Type</TableCell>
+      //           <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Relationship</TableCell>
+      //           <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Child Node</TableCell>
+      //           <TableCell sx={{ fontWeight: 'bold', color: '#ffffff', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>Child Type</TableCell>
+      //         </TableRow>
+      //       </TableHead>
+      //       <TableBody>
+      //         {(() => {
+      //           const visible = filteredData.filter(row => !hiddenNodes.has(row.parentTableName) && !hiddenNodes.has(row.childTableName));
+      //           const totalPages = Math.max(1, Math.ceil(visible.length / rowsPerPage));
+      //           const current = Math.min(page, totalPages);
+      //           const start = (current - 1) * rowsPerPage;
+      //           const pageRows = visible.slice(start, start + rowsPerPage);
+      //           return pageRows.map((row, index) => (
+      //             <TableRow
+      //               key={start + index}
+      //               sx={{ '&:nth-of-type(odd)': { backgroundColor: 'action.hover' }, '&:hover': { backgroundColor: '#e3f2fd' } }}
+      //             >
+      //               <TableCell>{row.parentTableName}</TableCell>
+      //               <TableCell>{row.parentTableType}</TableCell>
+      //               <TableCell>{row.relationship}</TableCell>
+      //               <TableCell>{row.childTableName}</TableCell>
+      //               <TableCell>{row.childTableType}</TableCell>
+      //             </TableRow>
+      //           ));
+      //         })()}
+      //       </TableBody>
+      //     </Table>
+      //   </Box>
 
-        {/* Pagination controls */}
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mt: 2 }}>
-          <Box>
-            <Button variant="outlined" size="small" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} sx={{ mr: 1 }}>Prev</Button>
-            <Button variant="outlined" size="small" onClick={() => setPage((p) => p + 1)} disabled={filteredData.filter(row => !hiddenNodes.has(row.parentTableName) && !hiddenNodes.has(row.childTableName)).length <= page * rowsPerPage}>Next</Button>
-          </Box>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Typography variant="body2">Page</Typography>
-            <Select value={page} size="small" onChange={(e) => setPage(Number(e.target.value))}>
-              {Array.from({ length: Math.max(1, Math.ceil(filteredData.filter(row => !hiddenNodes.has(row.parentTableName) && !hiddenNodes.has(row.childTableName)).length / rowsPerPage)) }).map((_, i) => (
-                <MenuItem key={i + 1} value={i + 1}>{i + 1}</MenuItem>
-              ))}
-            </Select>
-          </Box>
-        </Box>
-      </Box>
-      )}
+      //   // Pagination controls 
+      //   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mt: 2 }}>
+      //     <Box>
+      //       <Button variant="outlined" size="small" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} sx={{ mr: 1 }}>Prev</Button>
+      //       <Button variant="outlined" size="small" onClick={() => setPage((p) => p + 1)} disabled={filteredData.filter(row => !hiddenNodes.has(row.parentTableName) && !hiddenNodes.has(row.childTableName)).length <= page * rowsPerPage}>Next</Button>
+      //     </Box>
+      //     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+      //       <Typography variant="body2">Page</Typography>
+      //       <Select value={page} size="small" onChange={(e) => setPage(Number(e.target.value))}>
+      //         {Array.from({ length: Math.max(1, Math.ceil(filteredData.filter(row => !hiddenNodes.has(row.parentTableName) && !hiddenNodes.has(row.childTableName)).length / rowsPerPage)) }).map((_, i) => (
+      //           <MenuItem key={i + 1} value={i + 1}>{i + 1}</MenuItem>
+      //         ))}
+      //       </Select>
+      //     </Box>
+      //   </Box>
+      // </Box>
+      // )} */}
       </div>
     </>
   );
